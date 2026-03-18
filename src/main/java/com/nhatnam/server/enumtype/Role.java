@@ -15,6 +15,14 @@ import static com.nhatnam.server.enumtype.Permission.*;
 public enum Role {
 
   UN_AUTH(Collections.emptySet()),
+  SUPERADMIN(
+            Set.of(
+                    SUPERADMIN_READ,
+                    SUPERADMIN_UPDATE,
+                    SUPERADMIN_DELETE,
+                    SUPERADMIN_CREATE
+            )
+    ),
   ADMIN(
           Set.of(
                   ADMIN_READ,
@@ -58,6 +66,14 @@ public enum Role {
                     SHIPPER_UPDATE,
                     SHIPPER_DELETE,
                     SHIPPER_CREATE
+            )
+    ),
+    POS(
+            Set.of(
+                    POS_READ,
+                    POS_UPDATE,
+                    POS_DELETE,
+                    POS_CREATE
             )
     ),
   SELLER(

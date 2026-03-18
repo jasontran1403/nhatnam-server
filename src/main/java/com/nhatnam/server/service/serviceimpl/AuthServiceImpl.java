@@ -11,6 +11,7 @@ import com.nhatnam.server.enumtype.TokenType;
 import com.nhatnam.server.repository.TokenRepository;
 import com.nhatnam.server.repository.UserRepository;
 import com.nhatnam.server.service.AuthService;
+import dev.samstevens.totp.secret.SecretGenerator;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.security.authentication.AuthenticationManager;
@@ -30,6 +31,7 @@ public class AuthServiceImpl implements AuthService {
     private final PasswordEncoder passwordEncoder;
     private final JwtService jwtService;
     private final AuthenticationManager authenticationManager;
+    private final SecretGenerator secretGenerator;
 
     @Override
     @Transactional
@@ -43,12 +45,15 @@ public class AuthServiceImpl implements AuthService {
                 throw new RuntimeException("Email already exists");
             }
 
+            String secret = secretGenerator.generate();
+
             User newUser = User.builder()
                     .username(request.getUsername())
                     .email(request.getEmail())
                     .fullName(request.getFullName())
                     .phoneNumber(request.getPhoneNumber())
                     .password(passwordEncoder.encode(request.getPassword()))
+                    .secret(secret)
                     .role(Role.USER)
                     .timeCreate(System.currentTimeMillis())
                     .isLockAccount(false)
@@ -85,12 +90,12 @@ public class AuthServiceImpl implements AuthService {
             }
 
             // 4. Revoke all existing tokens
-            tokenRepository.findAllValidTokenByUser(user.getId())
-                    .forEach(token -> {
-                        token.setExpired(true);
-                        token.setRevoked(true);
-                        tokenRepository.save(token);
-                    });
+//            tokenRepository.findAllValidTokenByUser(user.getId())
+//                    .forEach(token -> {
+//                        token.setExpired(true);
+//                        token.setRevoked(true);
+//                        tokenRepository.save(token);
+//                    });
 
             // 5. Generate new JWT token
             String jwtToken = jwtService.generateToken(user);
@@ -110,6 +115,7 @@ public class AuthServiceImpl implements AuthService {
                     .userId(user.getId())
                     .fullName(user.getFullName())
                     .isLock(user.isLockAccount())
+                    .role(user.getRole().name())
                     .accessToken(jwtToken)
                     .build();
 

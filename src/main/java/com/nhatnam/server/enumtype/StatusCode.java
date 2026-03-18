@@ -13,22 +13,20 @@ public class StatusCode {
     public static final int CONFLICT = 905;                  // Dữ liệu bị trùng (email, phone...)
     public static final int VALIDATION_ERROR = 906;          // Lỗi validate dữ liệu
     public static final int TOO_MANY_REQUESTS = 907;         // Rate limit, spam request
+    public static final int NOT_IMPLEMENTED = 908;
 
     // ==================== SERVER ERRORS (921-940) ====================
     public static final int INTERNAL_SERVER_ERROR = 921;     // Lỗi server
-    public static final int SERVICE_UNAVAILABLE = 922;       // Service đang bảo trì
-    public static final int DATABASE_ERROR = 923;            // Lỗi database
+    public static final int JWT_EXPIRED = 923;
+    public static final int JWT_INVALID_SIGNATURE = 924;
 
     // ==================== BUSINESS LOGIC ERRORS (941-999) ====================
     public static final int WRONG_PASSWORD = 941;            // Sai mật khẩu
     public static final int ACCOUNT_LOCKED = 942;            // Tài khoản bị khóa
-    public static final int EMAIL_ALREADY_EXISTS = 943;      // Email đã tồn tại
-    public static final int PHONE_ALREADY_EXISTS = 944;      // Số điện thoại đã tồn tại
-    public static final int INSUFFICIENT_BALANCE = 945;      // Số dư không đủ
-    public static final int TRANSACTION_FAILED = 946;        // Giao dịch thất bại
     public static final int OUT_OF_STOCK = 947;              // Hết hàng
     public static final int INVALID_OTP = 948;               // OTP không hợp lệ
     public static final int OTP_EXPIRED = 949;               // OTP hết hạn
+    public static final int PRICE_CHANGED = 950;
 
     // ==================== HELPER METHOD ====================
 

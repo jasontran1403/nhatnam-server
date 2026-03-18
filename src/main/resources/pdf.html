@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Receipt</title>
+    <style>
+        *,
+        *:before,
+        *:after {
+            box-sizing: border-box;
+        }
+
+        html,
+        body {
+            width: 100svw;
+            height: 100svh;
+        }
+
+        body {
+            font: 16px/1.2 "Roboto", sans-serif;
+            color: #333;
+        }
+
+        .blog {
+            font-size: 14px;
+            font-weight: bold;
+            text-align: center;
+            position: absolute;
+            bottom: 15px;
+            z-index: 1;
+        }
+
+        svg,
+        img {
+            display: block;
+        }
+
+        .receipt_box>* {
+            padding: 0 32px;
+        }
+
+        .table-order tbody tr {
+            height: 40px;
+        }
+
+        .head {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+            padding-bottom: 0px;
+        }
+
+        .head .brand-name {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            width: 100%;
+        }
+
+
+        .body .info {
+            margin-bottom: 6px;
+            position: relative;
+            display: flex;
+            flex-direction: row;
+        }
+
+        .info .welcome {
+            width: 60%;
+            display: flex;
+            flex-direction: row;
+            justify-content: flex-start;
+            align-items: flex-start;
+        }
+
+        .info .username {
+            width: 40%;
+            display: flex;
+            flex-direction: row;
+            justify-content: flex-end;
+            align-items: flex-end;
+        }
+
+        .username span {
+            text-align: right;
+        }
+
+        .body .info:before {
+            content: "";
+            display: block;
+            width: 5px;
+            height: 100%;
+            background-color: mediumpurple;
+            position: absolute;
+            top: 0;
+            left: -32px;
+        }
+
+        .body .info .welcome {
+            font-weight: bold;
+        }
+
+        .body .info .welcome .username {
+            color: chocolate;
+        }
+
+        .body .info p {
+            color: rosybrown;
+            font-size: 14px;
+        }
+
+        .cart .title {
+            font-size: 20px;
+            font-weight: bold;
+            text-align: center;
+            text-transform: capitalize;
+        }
+
+        .cart .title:after {
+            content: "";
+            display: inline-block;
+            margin-left: 4px;
+            margin-right: 4px;
+        }
+
+        .cart .content {
+            font-size: 14px;
+        }
+
+        .foot {
+            position: relative;
+        }
+
+        .foot p {
+            width: 100%;
+            display: flex;
+            flex-direction: row;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .brand-name p {
+            font-weight: bolder;
+            font-size: 48px;
+        }
+
+        svg {
+            width: 100px;
+            height: 100px;
+            position: relative;
+            left: 15%;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        table th,
+        table td {
+            border: 1px solid black;
+            padding: 5px;
+            text-align: left;
+        }
+
+        table thead {
+            background-color: #f2f2f2;
+        }
+
+        table tfoot {
+            background-color: #f9f9f9;
+            font-weight: bold;
+        }
+
+        .table-order tbody tr {
+            height: 30px; /* Đặt chiều cao cố định cho tất cả các dòng */
+        }
+
+        .table-order tbody td {
+            vertical-align: middle; /* Căn giữa nội dung theo chiều dọc */
+        }
+
+        .center {
+            text-align: center;
+        }
+
+        .title {
+            width: 100%;
+            display: flex;
+            flex-direction: row;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .title p {
+            text-align: center;
+        }
+    </style>
+</head>
+
+<body>
+<div class="container">
+    <div class="receipt_box">
+        <div style="width: 100%; text-align: center;">
+            <div class="brand-name" style="display: inline-block; text-align: center;">
+                <img src="https://iili.io/3vdqwMl.md.png" style="height: 90px; width: 90px;" alt="Logo">
+            </div>
+        </div>
+
+        <div style="width: 100%; text-align: center;">
+            <div class="brand-name" style="display: inline-block; text-align: center;">
+                <p style="margin-top: 10px; font-size: 24px; font-weight: bold;">Phiếu Thu</p>
+            </div>
+        </div>
+        <div class="body">
+            <div style="border: 2px solid black; border-radius: 5px; padding: 5px;">
+                <div class="info">
+                    <div class="welcome">Khách hàng: </div>
+                    <div class="username"><span>{{customer_name}}</span></div>
+                </div>
+
+                <div class="info">
+                    <div class="welcome">Địa chỉ: </div>
+                    <div class="username"><span>{{customer_address}}</span>
+                    </div>
+                </div>
+            </div>
+            <div class="info">
+                <div class="welcome">Số điện thoại: </div>
+                <div class="username"><span>{{customer_phone}}</span></div>
+            </div>
+            <div class="info">
+                <div class="welcome">Địa chỉ nhận hàng: </div>
+                <div class="username"><span>{{customer_addressReceive}}</span>
+                </div>
+            </div>
+            <div class="info">
+                <div class="welcome">Dự kiến giao hàng: </div>
+                <div class="username"><span>{{deli_Time}}</span></div>
+            </div>
+            <div class="info">
+                <div class="welcome">Ghi chú: </div>
+                <div class="username"><span>{{order_note}}</span></div>
+            </div>
+
+            <div class="cart">
+                <div class="title">Thông tin đơn hàng</div>
+                <div class="content">
+                    <table class="table-order">
+                        <colgroup>
+                            <col style="width: 5%;">
+                            <col style="width: 33%;">
+                            <col style="width: 14%;">
+                            <col style="width: 13%;">
+                            <col style="width: 14%;">
+                            <col style="width: 21%;">
+                        </colgroup>
+                        <thead>
+                        <tr style="background-color: lightblue;">
+                            <td>
+                                <p>STT</p>
+                            </td>
+                            <td>
+                                <p>Sản phẩm</p>
+                            </td>
+                            <td class="center">
+                                <p>Đơn vị</p>
+                            </td>
+                            <td class="center">
+                                <p>Số lượng</p>
+                            </td>
+                            <td class="center">
+                                <p>Đơn giá</p>
+                            </td>
+                            <td style="text-align: right;">
+                                <p>Thành tiền</p>
+                            </td>
+                        </tr>
+                        </thead>
+                        <tbody>
+                        <tr>{{order_items}}</tr>
+                        </tbody>
+                    </table>
+
+                    <table class="table-order" style="margin-top: 20px;  margin-left: 330px;">
+                        <colgroup>
+                            <col style="width: 24%;">
+                            <col style="width: 18.5%;">
+                        </colgroup>
+                        <tbody>
+                        <tr>
+                            <td style="text-align: right;">
+                                Giá thành
+                            </td>
+                            <td style="text-align: right;">
+                                {{order_totalBeforeFee}}
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="text-align: right;">
+                                Chiết khấu ({{order_sale}})
+                            </td>
+
+                            <td style="text-align: right;">
+                                {{order_salePrice}}
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="text-align: right;">
+                                VAT ({{order_vat}}%)
+                            </td>
+                            <td style="text-align: right;">
+                                {{order_vatPrice}}
+                            </td>
+                        </tr>
+                        <tr>
+                            <td style="text-align: right;">
+                                Tổng cộng
+                            </td>
+                            <td style="text-align: right; font-style: italic; font-weight: bold;">
+                                {{order_totalAfterFee}}
+                            </td>
+                        </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+
+        <p style="text-align: center; "><small style="font-style: italic; color: red;font-size: 16px;">Please pay via this payment information below</small></p>
+
+        <div style="height: auto; display: flex; justify-content: space-between; align-items: center;">
+            <!-- Thông tin ngân hàng -->
+            <div style="width: 40%;">
+                <p style="text-align: center; font-size: 14px; font-weight: bold; margin: 2px 0; line-height: 1.2;">PHAN NGUYEN HOANG LONG</p>
+                <p style="text-align: center; font-size: 14px; font-weight: bold; margin: 2px 0; line-height: 1.2;">6787 7777 7777 77</p>
+                <p style="text-align: center; font-size: 14px; font-weight: bold; margin: 2px 0; line-height: 1.2;">Techcombank</p>
+            </div>
+
+            <!-- QR Code -->
+            <div style="width: 40%; display: flex; justify-content: center;">
+                <img src="{{qr_url}}" style="margin-left: 10%; width: 150px; height: 150px;" alt="QR Code Payment" />
+            </div>
+
+            <!-- Thông tin đơn hàng -->
+            <div style="width: 40%">
+                <div style="text-align: right; margin: 2px 0;">{{order_id}}</div>
+                <div style="text-align: right; margin: 2px 0;">{{print_time}}</div>
+                <div style="text-align: right; margin: 2px 0;">{{staffName}}</div>
+                <div style="text-align: right; margin: 2px 0;">{{support}}</div>
+            </div>
+        </div>
+
+
+        <div class="foot">
+            <div class="title">
+                <p>Thank you for your order. Enjoy the meal and see you next time!</p>
+            </div>
+        </div>
+    </div>
+</div>
+</body>
+
+</html>

@@ -14,4 +14,6 @@ public class AuthResponse {
     private String fullName;
     private boolean isLock;
     private String accessToken;
+    private String role;
 }
+

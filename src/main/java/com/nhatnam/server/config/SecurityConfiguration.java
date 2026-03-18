@@ -29,48 +29,65 @@ public class SecurityConfiguration {
 
     private static final String[] WHITE_LIST_URL = {
             "/api/auth/**",
+            "/api/seller/products",
+            "/api/seller/products/**",
             "/configuration/ui",
             "/configuration/security",
-            "/webjars/**"};
+            "/webjars/**"
+    };
+
     private final JwtAuthenticationFilter jwtAuthFilter;
     private final AuthenticationProvider authenticationProvider;
     private final LogoutHandler logoutHandler;
+    private final CustomAuthenticationEntryPoint authenticationEntryPoint;
+    private final CustomAccessDeniedHandler accessDeniedHandler;
 
     @Bean
     public SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
         http
                 .csrf(AbstractHttpConfigurer::disable)
                 .cors(cors -> cors.configurationSource(corsConfigurationSource()))
-                .authorizeHttpRequests(req ->
-                        req.requestMatchers(WHITE_LIST_URL)
-                                .permitAll()
-                                .requestMatchers("/api/user/**").hasRole(USER.name())
-                                .requestMatchers("/api/shipper/**").hasRole(SHIPPER.name())
-                                .requestMatchers("/api/seller/**").hasRole(SELLER.name())
-                                .requestMatchers("/api/warehouser/**").hasRole(WAREHOUSER.name())
-                                .requestMatchers("/api/accountant/**").hasRole(ACCOUNTANT.name())
-                                .requestMatchers("/api/admin/**").hasRole(ADMIN.name())
-                                .anyRequest()
-                                .authenticated()
+
+                // Quan trọng: override cách xử lý lỗi auth/authz → luôn 200 + JSON
+                .exceptionHandling(ex -> ex
+                        .authenticationEntryPoint(authenticationEntryPoint)
+                        .accessDeniedHandler(accessDeniedHandler)
                 )
+
+                .authorizeHttpRequests(req ->
+                        req.requestMatchers(WHITE_LIST_URL).permitAll()
+                                .requestMatchers("/api/user/**").hasRole(USER.name())
+                                .requestMatchers("/api/pos/**").hasRole(POS.name())
+                                .requestMatchers("/api/shipper/**").hasAnyRole(SHIPPER.name(), SUPERADMIN.name())
+                                .requestMatchers("/api/seller/**").hasAnyRole(SELLER.name(), SUPERADMIN.name())
+                                .requestMatchers("/api/warehouser/**").hasAnyRole(WAREHOUSER.name(), SUPERADMIN.name())
+                                .requestMatchers("/api/accountant/**").hasAnyRole(ACCOUNTANT.name(), SUPERADMIN.name())
+                                .requestMatchers("/api/admin/**").hasRole(ADMIN.name())
+                                .requestMatchers("/api/superadmin/**").hasRole(SUPERADMIN.name())
+                                .anyRequest().authenticated()
+                )
+
                 .sessionManagement(session -> session.sessionCreationPolicy(STATELESS))
                 .authenticationProvider(authenticationProvider)
                 .addFilterBefore(jwtAuthFilter, UsernamePasswordAuthenticationFilter.class)
+
                 .logout(logout ->
                         logout.logoutUrl("/api/auth/logout")
                                 .addLogoutHandler(logoutHandler)
-                                .logoutSuccessHandler((request, response, authentication) -> SecurityContextHolder.clearContext())
+                                .logoutSuccessHandler((request, response, authentication) ->
+                                        SecurityContextHolder.clearContext())
                 );
+
         return http.build();
     }
 
     @Bean
     public CorsConfigurationSource corsConfigurationSource() {
         CorsConfiguration configuration = new CorsConfiguration();
-        configuration.setAllowedOriginPatterns(List.of("*")); // Allow all origins
-        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS")); // Allow these methods
-        configuration.setAllowedHeaders(List.of("*")); // Allow all headers
-        configuration.setAllowCredentials(true); // Allow credentials
+        configuration.setAllowedOriginPatterns(List.of("*"));
+        configuration.setAllowedMethods(List.of("GET", "POST", "PUT", "DELETE", "OPTIONS"));
+        configuration.setAllowedHeaders(List.of("*"));
+        configuration.setAllowCredentials(true);
         UrlBasedCorsConfigurationSource source = new UrlBasedCorsConfigurationSource();
         source.registerCorsConfiguration("/**", configuration);
         return source;
