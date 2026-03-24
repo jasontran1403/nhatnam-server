@@ -393,10 +393,9 @@ public class DashboardService {
             PosOrderStatus status = (PosOrderStatus) r[1];
             long           cnt    = (Long) r[2];
             total += cnt;
-            if (source == OrderSource.TAKE_AWAY)        offline += cnt;
-            if (source == OrderSource.DINE_IN)          offline += cnt;
-            else if (source == OrderSource.SHOPEE_FOOD) shopee  += cnt;
-            else if (source == OrderSource.GRAB_FOOD)   grab    += cnt;
+            if (source == OrderSource.TAKE_AWAY || source == OrderSource.DINE_IN) offline += cnt;
+            else if (source == OrderSource.SHOPEE_FOOD) shopee += cnt;
+            else if (source == OrderSource.GRAB_FOOD)   grab   += cnt;
             if (status == PosOrderStatus.COMPLETED)      completed += cnt;
             else if (status == PosOrderStatus.CANCELLED) cancelled += cnt;
             else if (status == PosOrderStatus.PENDING)   pending   += cnt;

@@ -30,64 +30,51 @@ public class PosOrderExportService {
     private static final DateTimeFormatter DT_FMT =
             DateTimeFormatter.ofPattern("HH:mm dd/MM/yy");
 
-    // ── Public entry points ───────────────────────────────────────
-
-    /** Admin: export 1 store, layout 16 cột (không có cột Store). */
     @Transactional(readOnly = true)
     public byte[] exportForStore(Long storeId, String storeName,
                                  Long fromMs, Long toMs) {
-        List<PosOrderExportDto> rows =
-                exportRepo.findForStore(storeId, fromMs, toMs);
+        List<PosOrderExportDto> rows = exportRepo.findForStore(storeId, fromMs, toMs);
         return buildExcel(rows, fromMs, toMs, storeName, false);
     }
 
-    /** SuperAdmin: export TẤT CẢ stores, layout 17 cột (có cột Store). */
     @Transactional(readOnly = true)
     public byte[] exportForSuperAdmin(Long fromMs, Long toMs) {
-        List<PosOrderExportDto> rows =
-                exportRepo.findForAllStores(fromMs, toMs);
+        List<PosOrderExportDto> rows = exportRepo.findForAllStores(fromMs, toMs);
         return buildExcel(rows, fromMs, toMs, null, true);
     }
 
-    /** SuperAdmin: export 1 store cụ thể (giữ để dùng sau). */
     @Transactional(readOnly = true)
     public byte[] exportForSuperAdmin(Long storeId, String storeName,
                                       Long fromMs, Long toMs) {
-        List<PosOrderExportDto> rows =
-                exportRepo.findForStore(storeId, fromMs, toMs);
+        List<PosOrderExportDto> rows = exportRepo.findForStore(storeId, fromMs, toMs);
         return buildExcel(rows, fromMs, toMs, storeName, false);
     }
 
-    // ── Core builder ──────────────────────────────────────────────
-
     private byte[] buildExcel(List<PosOrderExportDto> rows,
                               Long fromMs, Long toMs,
-                              String storeName,
-                              boolean allStores) {
+                              String storeName, boolean allStores) {
         try (XSSFWorkbook wb = new XSSFWorkbook()) {
             XSSFSheet sheet = wb.createSheet("Orders");
             sheet.setDefaultColumnWidth(18);
 
-            // Styles
             CellStyle headerStyle = makeHeaderStyle(wb);
             CellStyle storeStyle  = makeStoreStyle(wb);
             CellStyle shiftStyle  = makeShiftStyle(wb);
             CellStyle dataStyle   = makeDataStyle(wb);
             CellStyle numStyle    = makeNumStyle(wb);
 
-            // Column count: allStores = 17 cols (0–16), single = 16 cols (0–15)
-            int lastCol = allStores ? 16 : 15;
+            // allStores = 18 cols (0–17), single = 17 cols (0–16)
+            int lastCol = allStores ? 17 : 16;
 
-            // Min widths
             int[] minW = allStores
-                    ? new int[]{30,28,22,20,18,14,12,10,14,18,14,16,14,20,14,8,8}
-                    : new int[]{28,22,20,18,14,12,10,14,18,14,16,14,20,14,8,8};
+                    ? new int[]{30,28,22,20,18,14,12,10,14,18,14,16,14,20,14,14,8,8}
+                    : new int[]{28,22,20,18,14,12,10,14,18,14,16,14,20,14,14,8,8};
             for (int i = 0; i < minW.length; i++)
                 sheet.setColumnWidth(i, minW[i] * 256);
 
             int rowNum = 0;
 
-            // ── Title ─────────────────────────────────────────────
+            // Title
             Row titleRow = sheet.createRow(rowNum++);
             titleRow.setHeightInPoints(30);
             Cell tc = titleRow.createCell(0);
@@ -95,25 +82,25 @@ public class PosOrderExportService {
             tc.setCellStyle(makeTitleStyle(wb));
             sheet.addMergedRegion(new CellRangeAddress(0, 0, 0, lastCol));
 
-            // ── Date range ────────────────────────────────────────
+            // Date range
             Row dateRow = sheet.createRow(rowNum++);
             Cell dc = dateRow.createCell(0);
             dc.setCellValue("Khoảng thời gian: từ ngày "
                     + fmtDate(fromMs) + " đến ngày " + fmtDate(toMs));
             dc.setCellStyle(makeSubtitleStyle(wb));
             sheet.addMergedRegion(new CellRangeAddress(1, 1, 0, lastCol));
-            rowNum++; // blank
+            rowNum++;
 
-            // ── Header ───────────────────────────────────────────
+            // Headers
             String[] headers = allStores
                     ? new String[]{"Xe / Store","Ca làm việc","OrderID#",
                     "Tên KH","SĐT KH","Số tiền","Giảm giá","VAT","Tổng cuối",
                     "Thời gian","Nguồn","Thanh toán",
-                    "Danh mục","Tên món","Giá bán","% Giảm","SL"}
+                    "Danh mục","Tên món","Giá gốc","Giá bán","% Giảm","SL"}
                     : new String[]{"Ca làm việc","OrderID#",
                     "Tên KH","SĐT KH","Số tiền","Giảm giá","VAT","Tổng cuối",
                     "Thời gian","Nguồn","Thanh toán",
-                    "Danh mục","Tên món","Giá bán","% Giảm","SL"};
+                    "Danh mục","Tên món","Giá gốc","Giá bán","% Giảm","SL"};
 
             Row hRow = sheet.createRow(rowNum++);
             hRow.setHeightInPoints(22);
@@ -123,20 +110,15 @@ public class PosOrderExportService {
                 c.setCellStyle(headerStyle);
             }
 
-            // ── Write data ────────────────────────────────────────
             rowNum = allStores
-                    ? writeAllStores(sheet, rows, rowNum,
-                    storeStyle, shiftStyle, dataStyle, numStyle)
-                    : writeSingleStore(sheet, rows, rowNum,
-                    shiftStyle, dataStyle, numStyle);
+                    ? writeAllStores(sheet, rows, rowNum, storeStyle, shiftStyle, dataStyle, numStyle)
+                    : writeSingleStore(sheet, rows, rowNum, shiftStyle, dataStyle, numStyle);
 
-            // ── Auto-size ─────────────────────────────────────────
             final int PADDING = 4 * 256;
             for (int col = 0; col <= lastCol; col++) {
                 sheet.autoSizeColumn(col, true);
                 sheet.setColumnWidth(col,
-                        Math.max(sheet.getColumnWidth(col) + PADDING,
-                                minW[col] * 256));
+                        Math.max(sheet.getColumnWidth(col) + PADDING, minW[col] * 256));
             }
 
             ByteArrayOutputStream out = new ByteArrayOutputStream();
@@ -145,39 +127,27 @@ public class PosOrderExportService {
 
         } catch (Exception e) {
             log.error("Excel export error", e);
-            throw new RuntimeException(
-                    "Lỗi tạo file Excel: " + e.getMessage(), e);
+            throw new RuntimeException("Lỗi tạo file Excel: " + e.getMessage(), e);
         }
     }
 
-    // ── Write all stores ──────────────────────────────────────────
-
-    private int writeAllStores(XSSFSheet sheet,
-                               List<PosOrderExportDto> rows, int rowNum,
+    private int writeAllStores(XSSFSheet sheet, List<PosOrderExportDto> rows, int rowNum,
                                CellStyle storeStyle, CellStyle shiftStyle,
                                CellStyle dataStyle, CellStyle numStyle) {
 
-        // Group: storeId → shiftId → orderId → List<row>
-        // Dùng LinkedHashMap để giữ thứ tự
         Map<Long, List<PosOrderExportDto>> byStore = rows.stream()
-                .collect(Collectors.groupingBy(
-                        PosOrderExportDto::storeId,
+                .collect(Collectors.groupingBy(PosOrderExportDto::storeId,
                         LinkedHashMap::new, Collectors.toList()));
 
         for (var storeEntry : byStore.entrySet()) {
             int storeStartRow = rowNum;
             List<PosOrderExportDto> storeRows = storeEntry.getValue();
-
-            // Build store label (từ first row)
             PosOrderExportDto first = storeRows.get(0);
             String storeLabel = buildStoreLabel(
-                    first.storeName(),
-                    first.storeAddress(),
-                    first.storePhone());
+                    first.storeName(), first.storeAddress(), first.storePhone());
 
             Map<Long, List<PosOrderExportDto>> byShift = storeRows.stream()
-                    .collect(Collectors.groupingBy(
-                            PosOrderExportDto::shiftId,
+                    .collect(Collectors.groupingBy(PosOrderExportDto::shiftId,
                             LinkedHashMap::new, Collectors.toList()));
 
             for (var shiftEntry : byShift.entrySet()) {
@@ -189,32 +159,28 @@ public class PosOrderExportService {
                 int shiftStartRow = rowNum;
 
                 Map<Long, List<PosOrderExportDto>> byOrder = shiftRows.stream()
-                        .collect(Collectors.groupingBy(
-                                PosOrderExportDto::orderId,
+                        .collect(Collectors.groupingBy(PosOrderExportDto::orderId,
                                 LinkedHashMap::new, Collectors.toList()));
 
                 for (var orderEntry : byOrder.entrySet()) {
                     List<PosOrderExportDto> orderRows = orderEntry.getValue();
                     PosOrderExportDto of = orderRows.get(0);
                     int orderStartRow = rowNum;
-                    int itemCount     = orderRows.size();
+                    int itemCount = orderRows.size();
 
                     for (int ii = 0; ii < itemCount; ii++) {
                         PosOrderExportDto r = orderRows.get(ii);
                         Row row = sheet.createRow(rowNum++);
                         row.setHeightInPoints(16);
 
-                        // Col 0: Store (merge sau)
                         Cell c0 = row.createCell(0);
                         c0.setCellValue(storeLabel);
                         c0.setCellStyle(storeStyle);
 
-                        // Col 1: Shift (merge sau)
                         Cell c1 = row.createCell(1);
                         c1.setCellValue(shiftLabel);
                         c1.setCellStyle(shiftStyle);
 
-                        // Col 2-11: order info (chỉ dòng đầu của order)
                         if (ii == 0) {
                             setL(row, 2,  of.orderCode(), dataStyle);
                             setL(row, 3,  nullDash(of.customerName()), dataStyle);
@@ -231,38 +197,34 @@ public class PosOrderExportService {
                                 row.createCell(c).setCellStyle(dataStyle);
                         }
 
-                        // Col 12-16: item info
+                        // Col 12-17: item info (Danh mục, Tên món, Giá gốc, Giá bán, % Giảm, SL)
                         if (r.hasItem()) {
-                            double price = r.finalUnitPrice() != null
-                                    ? r.finalUnitPrice().doubleValue() : 0;
-                            double pct   = r.discountPercent() != null
-                                    ? r.discountPercent().doubleValue() : 0;
+                            double baseP = r.basePrice() != null ? r.basePrice().doubleValue() : 0;
+                            double price = r.finalUnitPrice() != null ? r.finalUnitPrice().doubleValue() : 0;
+                            double pct   = r.discountPercent() != null ? r.discountPercent().doubleValue() : 0;
                             setL(row, 12, nvl(r.categoryName()), dataStyle);
                             setL(row, 13, nvl(r.productName()), dataStyle);
-                            setN(row, 14, price, numStyle);
-                            setL(row, 15, (int) pct + "%", dataStyle);
-                            setN(row, 16, r.quantity() != null
-                                    ? r.quantity() : 0, numStyle);
+                            setN(row, 14, baseP, numStyle);                          // Giá gốc
+                            setN(row, 15, price, numStyle);                          // Giá bán
+                            setL(row, 16, (int) pct + "%", dataStyle);               // % Giảm
+                            setN(row, 17, r.quantity() != null ? r.quantity() : 0, numStyle); // SL
                         } else {
-                            for (int c = 12; c <= 16; c++)
+                            for (int c = 12; c <= 17; c++)
                                 row.createCell(c).setCellStyle(dataStyle);
                         }
                     }
 
-                    // Merge order cols 2-11 across item rows
                     if (itemCount > 1)
                         for (int col = 2; col <= 11; col++)
                             sheet.addMergedRegion(new CellRangeAddress(
                                     orderStartRow, rowNum - 1, col, col));
                 }
 
-                // Merge shift col 1 across all order rows
                 if (rowNum - 1 > shiftStartRow)
                     sheet.addMergedRegion(new CellRangeAddress(
                             shiftStartRow, rowNum - 1, 1, 1));
             }
 
-            // Merge store col 0 across all rows
             if (rowNum - 1 > storeStartRow)
                 sheet.addMergedRegion(new CellRangeAddress(
                         storeStartRow, rowNum - 1, 0, 0));
@@ -270,16 +232,11 @@ public class PosOrderExportService {
         return rowNum;
     }
 
-    // ── Write single store ────────────────────────────────────────
-
-    private int writeSingleStore(XSSFSheet sheet,
-                                 List<PosOrderExportDto> rows, int rowNum,
-                                 CellStyle shiftStyle,
-                                 CellStyle dataStyle, CellStyle numStyle) {
+    private int writeSingleStore(XSSFSheet sheet, List<PosOrderExportDto> rows, int rowNum,
+                                 CellStyle shiftStyle, CellStyle dataStyle, CellStyle numStyle) {
 
         Map<Long, List<PosOrderExportDto>> byShift = rows.stream()
-                .collect(Collectors.groupingBy(
-                        PosOrderExportDto::shiftId,
+                .collect(Collectors.groupingBy(PosOrderExportDto::shiftId,
                         LinkedHashMap::new, Collectors.toList()));
 
         for (var shiftEntry : byShift.entrySet()) {
@@ -291,22 +248,20 @@ public class PosOrderExportService {
             int shiftStartRow = rowNum;
 
             Map<Long, List<PosOrderExportDto>> byOrder = shiftRows.stream()
-                    .collect(Collectors.groupingBy(
-                            PosOrderExportDto::orderId,
+                    .collect(Collectors.groupingBy(PosOrderExportDto::orderId,
                             LinkedHashMap::new, Collectors.toList()));
 
             for (var orderEntry : byOrder.entrySet()) {
                 List<PosOrderExportDto> orderRows = orderEntry.getValue();
                 PosOrderExportDto of = orderRows.get(0);
                 int orderStartRow = rowNum;
-                int itemCount     = orderRows.size();
+                int itemCount = orderRows.size();
 
                 for (int ii = 0; ii < itemCount; ii++) {
                     PosOrderExportDto r = orderRows.get(ii);
                     Row row = sheet.createRow(rowNum++);
                     row.setHeightInPoints(16);
 
-                    // Col 0: Shift
                     Cell c0 = row.createCell(0);
                     c0.setCellValue(shiftLabel);
                     c0.setCellStyle(shiftStyle);
@@ -327,19 +282,19 @@ public class PosOrderExportService {
                             row.createCell(c).setCellStyle(dataStyle);
                     }
 
+                    // Col 11-16: item info (Danh mục, Tên món, Giá gốc, Giá bán, % Giảm, SL)
                     if (r.hasItem()) {
-                        double price = r.finalUnitPrice() != null
-                                ? r.finalUnitPrice().doubleValue() : 0;
-                        double pct   = r.discountPercent() != null
-                                ? r.discountPercent().doubleValue() : 0;
+                        double baseP = r.basePrice() != null ? r.basePrice().doubleValue() : 0;
+                        double price = r.finalUnitPrice() != null ? r.finalUnitPrice().doubleValue() : 0;
+                        double pct   = r.discountPercent() != null ? r.discountPercent().doubleValue() : 0;
                         setL(row, 11, nvl(r.categoryName()), dataStyle);
                         setL(row, 12, nvl(r.productName()), dataStyle);
-                        setN(row, 13, price, numStyle);
-                        setL(row, 14, (int) pct + "%", dataStyle);
-                        setN(row, 15, r.quantity() != null
-                                ? r.quantity() : 0, numStyle);
+                        setN(row, 13, baseP, numStyle);                          // Giá gốc
+                        setN(row, 14, price, numStyle);                          // Giá bán
+                        setL(row, 15, (int) pct + "%", dataStyle);               // % Giảm
+                        setN(row, 16, r.quantity() != null ? r.quantity() : 0, numStyle); // SL
                     } else {
-                        for (int c = 11; c <= 15; c++)
+                        for (int c = 11; c <= 16; c++)
                             row.createCell(c).setCellStyle(dataStyle);
                     }
                 }
@@ -357,35 +312,27 @@ public class PosOrderExportService {
         return rowNum;
     }
 
-    // ── Helpers ───────────────────────────────────────────────────
-
     private String buildStoreLabel(String name, String address, String phone) {
         StringBuilder sb = new StringBuilder(nvl(name));
-        if (address != null && !address.isBlank())
-            sb.append("\n").append(address);
-        if (phone != null && !phone.isBlank())
-            sb.append("\n").append(phone);
+        if (address != null && !address.isBlank()) sb.append("\n").append(address);
+        if (phone   != null && !phone.isBlank())   sb.append("\n").append(phone);
         return sb.toString();
     }
 
-    private String buildShiftLabel(Long id, String staffName,
-                                   Long openTime, Long closeTime) {
+    private String buildShiftLabel(Long id, String staffName, Long openTime, Long closeTime) {
         String open  = openTime  != null ? fmtDateTime(openTime)  : "?";
         String close = closeTime != null ? fmtDateTime(closeTime) : "Đang mở";
-        return "SHIFT#" + id + " - " + nvl(staffName)
-                + "\n" + open + " – " + close;
+        return "SHIFT#" + id + " - " + nvl(staffName) + "\n" + open + " – " + close;
     }
 
     private String fmtDateTime(Long ms) {
         if (ms == null) return "";
-        return ZonedDateTime.ofInstant(Instant.ofEpochMilli(ms), VN_ZONE)
-                .format(DT_FMT);
+        return ZonedDateTime.ofInstant(Instant.ofEpochMilli(ms), VN_ZONE).format(DT_FMT);
     }
 
     private String fmtDate(Long ms) {
         if (ms == null) return "";
-        return ZonedDateTime.ofInstant(Instant.ofEpochMilli(ms), VN_ZONE)
-                .format(DATE_ONLY);
+        return ZonedDateTime.ofInstant(Instant.ofEpochMilli(ms), VN_ZONE).format(DATE_ONLY);
     }
 
     private String srcLabel(String s) {
@@ -401,25 +348,17 @@ public class PosOrderExportService {
     private String pmLabel(String m) {
         if (m == null) return "Tiền mặt";
         return switch (m) {
-            case "CASH"          -> "Tiền mặt";
-            case "BANK_TRANSFER",
-                 "TRANSFER"      -> "Chuyển khoản";
-            case "MOMO"          -> "MoMo";
-            case "VNPAY"         -> "VNPay";
-            case "ZALOPAY"       -> "ZaloPay";
-            default              -> m;
+            case "CASH"                    -> "Tiền mặt";
+            case "BANK_TRANSFER","TRANSFER" -> "Chuyển khoản";
+            case "MOMO"                    -> "MoMo";
+            case "VNPAY"                   -> "VNPay";
+            case "ZALOPAY"                 -> "ZaloPay";
+            default                        -> m;
         };
     }
 
-    private String nullDash(String s) {
-        return (s != null && !s.isBlank()) ? s : "-";
-    }
-
-    private String nvl(String s) {
-        return s != null ? s : "";
-    }
-
-    // ── Cell helpers ──────────────────────────────────────────────
+    private String nullDash(String s) { return (s != null && !s.isBlank()) ? s : "-"; }
+    private String nvl(String s)      { return s != null ? s : ""; }
 
     private void setL(Row row, int col, String value, CellStyle style) {
         Cell c = row.createCell(col);
@@ -439,8 +378,6 @@ public class PosOrderExportService {
         c.setCellStyle(style);
     }
 
-    // ── Style factories ───────────────────────────────────────────
-
     private CellStyle makeTitleStyle(XSSFWorkbook wb) {
         XSSFCellStyle s = wb.createCellStyle();
         XSSFFont f = wb.createFont();
@@ -449,8 +386,7 @@ public class PosOrderExportService {
         s.setFont(f);
         s.setAlignment(HorizontalAlignment.CENTER);
         s.setVerticalAlignment(VerticalAlignment.CENTER);
-        s.setFillForegroundColor(
-                new XSSFColor(new byte[]{(byte)30,(byte)64,(byte)175}, null));
+        s.setFillForegroundColor(new XSSFColor(new byte[]{(byte)30,(byte)64,(byte)175}, null));
         s.setFillPattern(FillPatternType.SOLID_FOREGROUND);
         return s;
     }
@@ -472,8 +408,7 @@ public class PosOrderExportService {
         s.setFont(f);
         s.setAlignment(HorizontalAlignment.LEFT);
         s.setVerticalAlignment(VerticalAlignment.CENTER);
-        s.setFillForegroundColor(
-                new XSSFColor(new byte[]{(byte)37,(byte)99,(byte)235}, null));
+        s.setFillForegroundColor(new XSSFColor(new byte[]{(byte)37,(byte)99,(byte)235}, null));
         s.setFillPattern(FillPatternType.SOLID_FOREGROUND);
         setBorder(s); s.setWrapText(true);
         return s;
@@ -487,8 +422,7 @@ public class PosOrderExportService {
         s.setFont(f);
         s.setAlignment(HorizontalAlignment.LEFT);
         s.setVerticalAlignment(VerticalAlignment.TOP);
-        s.setFillForegroundColor(
-                new XSSFColor(new byte[]{(byte)15,(byte)23,(byte)100}, null));
+        s.setFillForegroundColor(new XSSFColor(new byte[]{(byte)15,(byte)23,(byte)100}, null));
         s.setFillPattern(FillPatternType.SOLID_FOREGROUND);
         setBorder(s); s.setWrapText(true);
         return s;
@@ -502,8 +436,7 @@ public class PosOrderExportService {
         s.setFont(f);
         s.setAlignment(HorizontalAlignment.LEFT);
         s.setVerticalAlignment(VerticalAlignment.TOP);
-        s.setFillForegroundColor(
-                new XSSFColor(new byte[]{(byte)30,(byte)64,(byte)175}, null));
+        s.setFillForegroundColor(new XSSFColor(new byte[]{(byte)30,(byte)64,(byte)175}, null));
         s.setFillPattern(FillPatternType.SOLID_FOREGROUND);
         setBorder(s); s.setWrapText(true);
         return s;
@@ -513,8 +446,7 @@ public class PosOrderExportService {
         XSSFCellStyle s = wb.createCellStyle();
         s.setAlignment(HorizontalAlignment.LEFT);
         s.setVerticalAlignment(VerticalAlignment.CENTER);
-        s.setFillForegroundColor(
-                new XSSFColor(new byte[]{(byte)239,(byte)246,(byte)255}, null));
+        s.setFillForegroundColor(new XSSFColor(new byte[]{(byte)239,(byte)246,(byte)255}, null));
         s.setFillPattern(FillPatternType.SOLID_FOREGROUND);
         setBorder(s); s.setWrapText(false);
         return s;
@@ -526,8 +458,7 @@ public class PosOrderExportService {
         s.setDataFormat(fmt.getFormat("#,##0"));
         s.setAlignment(HorizontalAlignment.RIGHT);
         s.setVerticalAlignment(VerticalAlignment.CENTER);
-        s.setFillForegroundColor(
-                new XSSFColor(new byte[]{(byte)239,(byte)246,(byte)255}, null));
+        s.setFillForegroundColor(new XSSFColor(new byte[]{(byte)239,(byte)246,(byte)255}, null));
         s.setFillPattern(FillPatternType.SOLID_FOREGROUND);
         setBorder(s);
         return s;
@@ -538,8 +469,7 @@ public class PosOrderExportService {
         s.setBorderBottom(BorderStyle.THIN);
         s.setBorderLeft(BorderStyle.THIN);
         s.setBorderRight(BorderStyle.THIN);
-        XSSFColor grey = new XSSFColor(
-                new byte[]{(byte)209,(byte)213,(byte)219}, null);
+        XSSFColor grey = new XSSFColor(new byte[]{(byte)209,(byte)213,(byte)219}, null);
         s.setTopBorderColor(grey);
         s.setBottomBorderColor(grey);
         s.setLeftBorderColor(grey);

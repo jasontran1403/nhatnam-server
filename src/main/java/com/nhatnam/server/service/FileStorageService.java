@@ -12,4 +12,5 @@ public interface FileStorageService {
     String saveIngredientImage(MultipartFile file) throws IOException;
     void deleteFile(String filePath) throws IOException;
     byte[] getFile(String filePath) throws IOException;
+    String saveSellerImportReceiptImage(MultipartFile file) throws IOException;
 }

@@ -15,4 +15,5 @@ public class PosIngredientResponse {
     private Integer displayOrder;
     private IngredientType ingredientType;
     private BigDecimal addonPrice;
+    private String unit;
 }

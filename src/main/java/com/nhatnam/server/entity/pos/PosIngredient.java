@@ -44,4 +44,8 @@ public class PosIngredient {
     /** Store mà ingredient này thuộc về */
     @Column(name = "store_id", nullable = false)
     private Long storeId;
+
+    @Column(name = "unit", nullable = false, length = 20)
+    @Builder.Default
+    private String unit = "Cây";
 }

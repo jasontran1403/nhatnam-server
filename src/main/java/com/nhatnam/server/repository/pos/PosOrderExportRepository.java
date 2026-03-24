@@ -16,19 +16,19 @@ public class PosOrderExportRepository {
     private EntityManager em;
 
     private static final String SELECT = """
-            SELECT
-                st.id, st.name, st.address, st.phone,
-                sh.id, sh.staffName, sh.openTime, sh.closeTime,
-                o.id, o.orderCode, o.customerName, o.customerPhone,
-                o.totalAmount, o.finalAmount,
-                o.orderSource, o.paymentMethod, o.createdAt,
-                i.categoryName, i.productName,
-                i.finalUnitPrice, i.discountPercent, i.quantity, i.vatAmount
-            FROM PosOrder o
-            JOIN o.shift sh
-            JOIN o.store st
-            LEFT JOIN o.items i
-            """;
+        SELECT
+            st.id, st.name, st.address, st.phone,
+            sh.id, sh.staffName, sh.openTime, sh.closeTime,
+            o.id, o.orderCode, o.customerName, o.customerPhone,
+            o.totalAmount, o.finalAmount,
+            o.orderSource, o.paymentMethod, o.createdAt,
+            i.categoryName, i.productName,
+            i.basePrice, i.finalUnitPrice, i.discountPercent, i.quantity, i.vatAmount
+        FROM PosOrder o
+        JOIN o.shift sh
+        JOIN o.store st
+        LEFT JOIN o.items i
+        """;
 
     public List<PosOrderExportDto> findForStore(Long storeId,
                                                 Long fromMs, Long toMs) {
@@ -76,12 +76,13 @@ public class PosOrderExportRepository {
                 str(r[i++]),                  // customerPhone
                 toBD(r[i++]),                 // totalAmount
                 toBD(r[i++]),                 // finalAmount
-                r[i++] != null                // orderSource — enum.name()
+                r[i++] != null                // orderSource
                         ? r[i - 1].toString() : null,
                 str(r[i++]),                  // paymentMethod
                 toLong(r[i++]),               // createdAt
                 str(r[i++]),                  // categoryName
                 str(r[i++]),                  // productName
+                toBD(r[i++]),                 // basePrice       ← THÊM
                 toBD(r[i++]),                 // finalUnitPrice
                 toBD(r[i++]),                 // discountPercent
                 toInt(r[i++]),                // quantity

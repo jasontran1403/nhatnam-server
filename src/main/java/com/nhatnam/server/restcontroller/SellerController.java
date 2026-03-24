@@ -1,5 +1,6 @@
 package com.nhatnam.server.restcontroller;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nhatnam.server.config.TransactionLockManager;
 import com.nhatnam.server.dto.InvoiceDTO;
 import com.nhatnam.server.dto.request.*;
@@ -47,22 +48,39 @@ public class SellerController {
     private final CustomerService customerService;
     private final InventoryLogRepository inventoryLogRepository;
     private final ManualImportService manualImportService;
+    private final ObjectMapper objectMapper;
 
-
-    @PostMapping("/inventory-imports/manual")
+    @PostMapping(
+            value    = "/inventory-imports/manual",
+            consumes = MediaType.MULTIPART_FORM_DATA_VALUE
+    )
     public ResponseEntity<ApiResponse<ManualImportResponse>> manualImport(
-            @Valid @RequestBody ManualImportRequest request,
+            @RequestPart("data")                             String        dataJson,
+            @RequestPart(value = "image", required = false)  MultipartFile receiptImage,
             Authentication authentication) {
 
-        if (authentication == null || !authentication.isAuthenticated()) {
+        if (authentication == null || !authentication.isAuthenticated())
             return ResponseEntity.ok(ApiResponse.error(StatusCode.UNAUTHORIZED, "Unauthorized"));
-        }
+
         try {
             User actor = (User) authentication.getPrincipal();
+
+            // Parse JSON part
+            ManualImportRequest request = objectMapper.readValue(dataJson, ManualImportRequest.class);
+
+            // Upload ảnh phiếu nếu có → lưu vào seller-import/
+            if (receiptImage != null && !receiptImage.isEmpty()) {
+                String imageUrl = fileStorageService.saveSellerImportReceiptImage(receiptImage);
+                request.setReceiptImageUrl(imageUrl);
+                log.info("[SELLER] Receipt image saved: {}", imageUrl);
+            }
+
             ManualImportResponse result = manualImportService.importBatch(request, actor);
 
-            log.info("[SELLER] Manual import batch {} — {} items by {}",
-                    result.getBatchCode(), result.getTotalItems(), actor.getUsername());
+            log.info("[SELLER] Manual import batch {} — {} items by {} | supplier={} | image={}",
+                    result.getBatchCode(), result.getTotalItems(), actor.getUsername(),
+                    result.getSupplierRef()    != null ? result.getSupplierRef()    : "-",
+                    result.getReceiptImageUrl() != null ? result.getReceiptImageUrl() : "-");
 
             return ResponseEntity.ok(
                     ApiResponse.success(result, "Nhập kho thành công. Batch: " + result.getBatchCode())
@@ -75,6 +93,7 @@ public class SellerController {
             return ResponseEntity.ok(ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
         }
     }
+
 
     @PostMapping("/products/{id}/tiers")
     public ResponseEntity<ApiResponse<ProductResponse>> addTier(
@@ -771,8 +790,8 @@ public class SellerController {
     @DeleteMapping("/ingredients/{id}")
     public ResponseEntity<ApiResponse<Object>> deleteIngredient(@PathVariable Long id) {
         try {
-            ingredientService.deleteIngredient(id);
-            log.info("✅ Deleted ingredient ID: {}", id);
+//            ingredientService.deleteIngredient(id);
+//            log.info("✅ Deleted ingredient ID: {}", id);
 
             return ResponseEntity.ok(
                     ApiResponse.success(null, "Ingredient deleted successfully")

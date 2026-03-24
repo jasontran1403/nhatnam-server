@@ -101,4 +101,15 @@ public interface PosShiftRepository extends JpaRepository<PosShift, Long> {
     boolean existsShiftByStoreAndDate(
             @Param("storeId")   Long storeId,
             @Param("shiftDate") String shiftDate);
+
+    @Query("""
+    SELECT COUNT(s) > 0 FROM PosShift s
+    JOIN PosUserStore pus ON pus.user.id = s.openedBy.id
+    WHERE pus.store.id = :storeId AND s.shiftDate = :shiftDate
+    AND s.status = :status
+""")
+    boolean existsShiftByStoreAndDateAndStatus(
+            @Param("storeId")   Long storeId,
+            @Param("shiftDate") String shiftDate,
+            @Param("status")    ShiftStatus status);
 }

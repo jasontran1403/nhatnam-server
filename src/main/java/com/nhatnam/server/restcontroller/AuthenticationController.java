@@ -10,13 +10,6 @@ import com.nhatnam.server.enumtype.StatusCode;
 import com.nhatnam.server.repository.AppVersionRepository;
 import com.nhatnam.server.service.AuthService;
 import com.nhatnam.server.service.FileStorageService;
-import com.stripe.Stripe;
-import com.stripe.exception.StripeException;
-import com.stripe.model.PaymentIntent;
-import com.stripe.model.checkout.Session;
-import com.stripe.param.PaymentIntentCancelParams;
-import com.stripe.param.PaymentIntentCreateParams;
-import com.stripe.param.checkout.SessionCreateParams;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.log4j.Log4j2;
@@ -41,9 +34,9 @@ public class AuthenticationController {
     private final AuthService authService;
     private final FileStorageService fileStorageService;
     private final AppVersionRepository appVersionRepository;
-
-    @Value("${stripe.secret-key}")
-    private String stripeSecretKey;
+//
+//    @Value("${stripe.secret-key}")
+//    private String stripeSecretKey;
 
     @GetMapping("/fetch-version")
     public ResponseEntity<ApiResponse<Map<String, Object>>> fetchVersion(
@@ -149,117 +142,117 @@ public class AuthenticationController {
         }
     }
 
-    @PostMapping("/create-payment-intent")
-    public ResponseEntity<ApiResponse<Object>> createPaymentIntent(
-            @RequestBody Map<String, Object> requestBody) {
-
-        try {
-            Stripe.apiKey = stripeSecretKey;
-
-            String title = (String) requestBody.get("title");
-            Number amountRaw = (Number) requestBody.get("amount");
-            Long productId = ((Number) requestBody.get("productId")).longValue();
-
-            if (title == null || amountRaw == null || productId == null) {
-                return ResponseEntity.badRequest().body(
-                        ApiResponse.error(StatusCode.BAD_REQUEST, "Thiếu thông tin")
-                );
-            }
-
-            double amount = amountRaw.doubleValue();
-            long unitAmount = Math.round(amount * 100); // cent
-
-            PaymentIntentCreateParams params = PaymentIntentCreateParams.builder()
-                    .setAmount(unitAmount)
-                    .setCurrency("usd")
-                    .setDescription(title)
-                    .putMetadata("productId", String.valueOf(productId))
-                    .build();
-
-            PaymentIntent paymentIntent = PaymentIntent.create(params);
-
-            Map<String, String> responseData = new HashMap<>();
-            responseData.put("clientSecret", paymentIntent.getClientSecret());
-            responseData.put("paymentIntentId", paymentIntent.getId()); // Trả về ID để có thể hủy sau
-
-            return ResponseEntity.ok(
-                    ApiResponse.success(StatusCode.SUCCESS, responseData, "Tạo PaymentIntent thành công")
-            );
-
-        } catch (StripeException e) {
-            log.error("Lỗi Stripe: {}", e.getMessage());
-            return ResponseEntity.ok(
-                    ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage())
-            );
-        } catch (Exception e) {
-            log.error("Lỗi hệ thống: {}", e.getMessage());
-            return ResponseEntity.ok(
-                    ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage())
-            );
-        }
-    }
-
-    @PostMapping("/cancel-payment-intent")
-    public ResponseEntity<ApiResponse<Object>> cancelPaymentIntent(
-            @RequestBody Map<String, String> requestBody) {
-
-        try {
-            Stripe.apiKey = stripeSecretKey;
-
-            String paymentIntentId = requestBody.get("paymentIntentId");
-
-            if (paymentIntentId == null || paymentIntentId.isEmpty()) {
-                return ResponseEntity.badRequest().body(
-                        ApiResponse.error(StatusCode.BAD_REQUEST, "Thiếu paymentIntentId")
-                );
-            }
-
-            // Lấy PaymentIntent
-            PaymentIntent paymentIntent = PaymentIntent.retrieve(paymentIntentId);
-
-            // Kiểm tra trạng thái hiện tại
-            String currentStatus = paymentIntent.getStatus();
-
-            // Chỉ hủy nếu chưa thành công hoặc chưa bị hủy
-            if ("succeeded".equals(currentStatus)) {
-                return ResponseEntity.ok(
-                        ApiResponse.error(StatusCode.BAD_REQUEST, "Không thể hủy thanh toán đã thành công")
-                );
-            }
-
-            if ("canceled".equals(currentStatus)) {
-                return ResponseEntity.ok(
-                        ApiResponse.error(StatusCode.BAD_REQUEST, "Thanh toán đã bị hủy trước đó")
-                );
-            }
-
-            // Hủy PaymentIntent
-            PaymentIntentCancelParams cancelParams = PaymentIntentCancelParams.builder()
-                    .build();
-
-            PaymentIntent canceledPaymentIntent = paymentIntent.cancel(cancelParams);
-
-            Map<String, Object> responseData = new HashMap<>();
-            responseData.put("paymentIntentId", canceledPaymentIntent.getId());
-            responseData.put("status", canceledPaymentIntent.getStatus());
-            responseData.put("cancellationReason", "customer_canceled");
-
-            return ResponseEntity.ok(
-                    ApiResponse.success(StatusCode.SUCCESS, responseData, "Hủy thanh toán thành công")
-            );
-
-        } catch (StripeException e) {
-            log.error("Lỗi Stripe khi hủy PaymentIntent: {}", e.getMessage());
-            return ResponseEntity.ok(
-                    ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, "Lỗi Stripe: " + e.getMessage())
-            );
-        } catch (Exception e) {
-            log.error("Lỗi hệ thống khi hủy PaymentIntent: {}", e.getMessage());
-            return ResponseEntity.ok(
-                    ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, "Lỗi hệ thống: " + e.getMessage())
-            );
-        }
-    }
+//    @PostMapping("/create-payment-intent")
+//    public ResponseEntity<ApiResponse<Object>> createPaymentIntent(
+//            @RequestBody Map<String, Object> requestBody) {
+//
+//        try {
+//            Stripe.apiKey = stripeSecretKey;
+//
+//            String title = (String) requestBody.get("title");
+//            Number amountRaw = (Number) requestBody.get("amount");
+//            Long productId = ((Number) requestBody.get("productId")).longValue();
+//
+//            if (title == null || amountRaw == null || productId == null) {
+//                return ResponseEntity.badRequest().body(
+//                        ApiResponse.error(StatusCode.BAD_REQUEST, "Thiếu thông tin")
+//                );
+//            }
+//
+//            double amount = amountRaw.doubleValue();
+//            long unitAmount = Math.round(amount * 100); // cent
+//
+//            PaymentIntentCreateParams params = PaymentIntentCreateParams.builder()
+//                    .setAmount(unitAmount)
+//                    .setCurrency("usd")
+//                    .setDescription(title)
+//                    .putMetadata("productId", String.valueOf(productId))
+//                    .build();
+//
+//            PaymentIntent paymentIntent = PaymentIntent.create(params);
+//
+//            Map<String, String> responseData = new HashMap<>();
+//            responseData.put("clientSecret", paymentIntent.getClientSecret());
+//            responseData.put("paymentIntentId", paymentIntent.getId()); // Trả về ID để có thể hủy sau
+//
+//            return ResponseEntity.ok(
+//                    ApiResponse.success(StatusCode.SUCCESS, responseData, "Tạo PaymentIntent thành công")
+//            );
+//
+//        } catch (StripeException e) {
+//            log.error("Lỗi Stripe: {}", e.getMessage());
+//            return ResponseEntity.ok(
+//                    ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage())
+//            );
+//        } catch (Exception e) {
+//            log.error("Lỗi hệ thống: {}", e.getMessage());
+//            return ResponseEntity.ok(
+//                    ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage())
+//            );
+//        }
+//    }
+//
+//    @PostMapping("/cancel-payment-intent")
+//    public ResponseEntity<ApiResponse<Object>> cancelPaymentIntent(
+//            @RequestBody Map<String, String> requestBody) {
+//
+//        try {
+//            Stripe.apiKey = stripeSecretKey;
+//
+//            String paymentIntentId = requestBody.get("paymentIntentId");
+//
+//            if (paymentIntentId == null || paymentIntentId.isEmpty()) {
+//                return ResponseEntity.badRequest().body(
+//                        ApiResponse.error(StatusCode.BAD_REQUEST, "Thiếu paymentIntentId")
+//                );
+//            }
+//
+//            // Lấy PaymentIntent
+//            PaymentIntent paymentIntent = PaymentIntent.retrieve(paymentIntentId);
+//
+//            // Kiểm tra trạng thái hiện tại
+//            String currentStatus = paymentIntent.getStatus();
+//
+//            // Chỉ hủy nếu chưa thành công hoặc chưa bị hủy
+//            if ("succeeded".equals(currentStatus)) {
+//                return ResponseEntity.ok(
+//                        ApiResponse.error(StatusCode.BAD_REQUEST, "Không thể hủy thanh toán đã thành công")
+//                );
+//            }
+//
+//            if ("canceled".equals(currentStatus)) {
+//                return ResponseEntity.ok(
+//                        ApiResponse.error(StatusCode.BAD_REQUEST, "Thanh toán đã bị hủy trước đó")
+//                );
+//            }
+//
+//            // Hủy PaymentIntent
+//            PaymentIntentCancelParams cancelParams = PaymentIntentCancelParams.builder()
+//                    .build();
+//
+//            PaymentIntent canceledPaymentIntent = paymentIntent.cancel(cancelParams);
+//
+//            Map<String, Object> responseData = new HashMap<>();
+//            responseData.put("paymentIntentId", canceledPaymentIntent.getId());
+//            responseData.put("status", canceledPaymentIntent.getStatus());
+//            responseData.put("cancellationReason", "customer_canceled");
+//
+//            return ResponseEntity.ok(
+//                    ApiResponse.success(StatusCode.SUCCESS, responseData, "Hủy thanh toán thành công")
+//            );
+//
+//        } catch (StripeException e) {
+//            log.error("Lỗi Stripe khi hủy PaymentIntent: {}", e.getMessage());
+//            return ResponseEntity.ok(
+//                    ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, "Lỗi Stripe: " + e.getMessage())
+//            );
+//        } catch (Exception e) {
+//            log.error("Lỗi hệ thống khi hủy PaymentIntent: {}", e.getMessage());
+//            return ResponseEntity.ok(
+//                    ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, "Lỗi hệ thống: " + e.getMessage())
+//            );
+//        }
+//    }
 
     /**
      * Đăng ký tài khoản mới

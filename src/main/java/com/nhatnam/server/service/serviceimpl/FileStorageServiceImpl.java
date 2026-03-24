@@ -23,11 +23,12 @@ public class FileStorageServiceImpl implements FileStorageService {
     private static final String BASE_STORAGE_PATH =
             System.getProperty("user.home") + "/Desktop/nhatnam-storage";
 
-    private static final String PRODUCT_IMAGE_PATH     = BASE_STORAGE_PATH + "/product";
-    private static final String POS_PRODUCT_IMAGE_PATH = BASE_STORAGE_PATH + "/pos-product";
-    private static final String CATEGORY_IMAGE_PATH    = BASE_STORAGE_PATH + "/category";
-    private static final String VARIANT_IMAGE_PATH     = BASE_STORAGE_PATH + "/variant";
-    private static final String INGREDIENT_IMAGE_PATH  = BASE_STORAGE_PATH + "/ingredient";
+    private static final String PRODUCT_IMAGE_PATH       = BASE_STORAGE_PATH + "/product";
+    private static final String POS_PRODUCT_IMAGE_PATH   = BASE_STORAGE_PATH + "/pos-product";
+    private static final String CATEGORY_IMAGE_PATH      = BASE_STORAGE_PATH + "/category";
+    private static final String VARIANT_IMAGE_PATH       = BASE_STORAGE_PATH + "/variant";
+    private static final String INGREDIENT_IMAGE_PATH    = BASE_STORAGE_PATH + "/ingredient";
+    private static final String SELLER_IMPORT_IMAGE_PATH = BASE_STORAGE_PATH + "/seller-import"; // ← THÊM
 
     private static final List<String> ALLOWED_EXTENSIONS = Arrays.asList(
             "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif"
@@ -44,6 +45,7 @@ public class FileStorageServiceImpl implements FileStorageService {
             Files.createDirectories(Paths.get(CATEGORY_IMAGE_PATH));
             Files.createDirectories(Paths.get(VARIANT_IMAGE_PATH));
             Files.createDirectories(Paths.get(INGREDIENT_IMAGE_PATH));
+            Files.createDirectories(Paths.get(SELLER_IMPORT_IMAGE_PATH)); // ← THÊM
             log.info("✅ Storage directories initialized at: {}", BASE_STORAGE_PATH);
         } catch (IOException e) {
             throw new RuntimeException("Could not create storage directories", e);
@@ -79,6 +81,42 @@ public class FileStorageServiceImpl implements FileStorageService {
         return saveImage(file, INGREDIENT_IMAGE_PATH, "ingredient", 150, 150);
     }
 
+    /**
+     * Lưu ảnh phiếu nhập kho từ NCC.
+     * Resize xuống max 1920px (giữ tỉ lệ, không crop) để tiết kiệm dung lượng
+     * nhưng vẫn đủ chất lượng để đọc chữ trên phiếu.
+     */
+    @Override
+    public String saveSellerImportReceiptImage(MultipartFile file) throws IOException {
+        if (file == null || file.isEmpty())
+            throw new IllegalArgumentException("File is empty");
+
+        String originalFilename = file.getOriginalFilename();
+        if (originalFilename == null || !isValidFormat(originalFilename))
+            throw new IllegalArgumentException(
+                    "Invalid image format. Allowed: " + ALLOWED_EXTENSIONS);
+
+        BufferedImage original = ImageIO.read(file.getInputStream());
+        if (original == null) throw new IOException("Cannot read image file");
+
+        // Resize xuống max 1920px — giữ tỉ lệ, không crop
+        BufferedImage resized = resizeKeepRatio(original, 1920);
+
+        String filename = generateFilename("seller-import");
+        Path target = Paths.get(SELLER_IMPORT_IMAGE_PATH, filename);
+
+        if (!ImageIO.write(resized, "png", target.toFile()))
+            throw new IOException("Failed to write receipt image");
+
+        log.info("✅ [seller-import] receipt saved → {} | original={}×{} resized={}×{} ({}KB original)",
+                filename,
+                original.getWidth(), original.getHeight(),
+                resized.getWidth(), resized.getHeight(),
+                file.getSize() / 1024);
+
+        return "/images/seller-import/" + filename;
+    }
+
     // ════════════════════════════════════════
     // CORE SAVE LOGIC
     // ════════════════════════════════════════
@@ -89,15 +127,14 @@ public class FileStorageServiceImpl implements FileStorageService {
 
         String originalFilename = file.getOriginalFilename();
         if (originalFilename == null || !isValidFormat(originalFilename)) {
-            throw new IllegalArgumentException("Invalid image format. Allowed: " + ALLOWED_EXTENSIONS);
+            throw new IllegalArgumentException(
+                    "Invalid image format. Allowed: " + ALLOWED_EXTENSIONS);
         }
 
         BufferedImage original = ImageIO.read(file.getInputStream());
         if (original == null) throw new IOException("Cannot read image file");
 
-        // Detect xem ảnh gốc có alpha (transparency) không
         boolean hasAlpha = original.getColorModel().hasAlpha();
-
         BufferedImage resized = resizeAndCrop(original, targetW, targetH, hasAlpha);
 
         String filename = generateFilename(prefix);
@@ -116,10 +153,40 @@ public class FileStorageServiceImpl implements FileStorageService {
     }
 
     /**
-     * Cover-crop: scale để fill, rồi crop từ giữa.
-     * Nếu ảnh gốc có alpha → dùng ARGB để giữ nền trong suốt.
-     * Nếu không có alpha → dùng RGB bình thường.
+     * Resize giữ tỉ lệ — không crop. Nếu ảnh nhỏ hơn maxSide thì giữ nguyên.
      */
+    private BufferedImage resizeKeepRatio(BufferedImage src, int maxSide) {
+        int origW = src.getWidth();
+        int origH = src.getHeight();
+
+        // Không cần resize nếu ảnh đã nhỏ hơn maxSide
+        if (origW <= maxSide && origH <= maxSide) return src;
+
+        double ratio = (double) maxSide / Math.max(origW, origH);
+        int newW = (int) (origW * ratio);
+        int newH = (int) (origH * ratio);
+
+        boolean hasAlpha = src.getColorModel().hasAlpha();
+        int imgType = hasAlpha ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB;
+
+        BufferedImage out = new BufferedImage(newW, newH, imgType);
+        Graphics2D g = out.createGraphics();
+        g.setRenderingHint(RenderingHints.KEY_INTERPOLATION,
+                RenderingHints.VALUE_INTERPOLATION_BILINEAR);
+        g.setRenderingHint(RenderingHints.KEY_RENDERING,
+                RenderingHints.VALUE_RENDER_QUALITY);
+        g.setRenderingHint(RenderingHints.KEY_ANTIALIASING,
+                RenderingHints.VALUE_ANTIALIAS_ON);
+        if (!hasAlpha) {
+            g.setColor(Color.WHITE);
+            g.fillRect(0, 0, newW, newH);
+        }
+        g.drawImage(src, 0, 0, newW, newH, null);
+        g.dispose();
+
+        return out;
+    }
+
     private BufferedImage resizeAndCrop(BufferedImage src, int w, int h, boolean hasAlpha) {
         double ratioW = (double) w / src.getWidth();
         double ratioH = (double) h / src.getHeight();
@@ -128,9 +195,6 @@ public class FileStorageServiceImpl implements FileStorageService {
         int sw = (int) (src.getWidth()  * ratio);
         int sh = (int) (src.getHeight() * ratio);
 
-        // ── Chọn type phù hợp ────────────────────────────────
-        // TYPE_INT_ARGB: giữ alpha (nền trong suốt)
-        // TYPE_INT_RGB:  không có alpha (nền đặc)
         int imgType = hasAlpha ? BufferedImage.TYPE_INT_ARGB : BufferedImage.TYPE_INT_RGB;
 
         BufferedImage tmp = new BufferedImage(sw, sh, imgType);
@@ -143,12 +207,8 @@ public class FileStorageServiceImpl implements FileStorageService {
                 RenderingHints.VALUE_ANTIALIAS_ON);
 
         if (hasAlpha) {
-            // Clear toàn bộ canvas thành transparent (alpha=0)
-            // Bắt buộc phải dùng Composite.CLEAR trước khi draw
-            // để tránh JVM fill màu đen mặc định vào vùng alpha
             g.setComposite(AlphaComposite.getInstance(AlphaComposite.CLEAR, 0.0f));
             g.fillRect(0, 0, sw, sh);
-            // Restore composite về SRC_OVER để draw ảnh lên
             g.setComposite(AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 1.0f));
         } else {
             g.setColor(Color.WHITE);
@@ -197,12 +257,13 @@ public class FileStorageServiceImpl implements FileStorageService {
         String type     = parts[2];
         String filename = parts[3];
         return switch (type) {
-            case "product"     -> Paths.get(PRODUCT_IMAGE_PATH,     filename);
-            case "pos-product" -> Paths.get(POS_PRODUCT_IMAGE_PATH, filename);
-            case "category"    -> Paths.get(CATEGORY_IMAGE_PATH,    filename);
-            case "variant"     -> Paths.get(VARIANT_IMAGE_PATH,     filename);
-            case "ingredient"  -> Paths.get(INGREDIENT_IMAGE_PATH,  filename);
-            default            -> null;
+            case "product"       -> Paths.get(PRODUCT_IMAGE_PATH,       filename);
+            case "pos-product"   -> Paths.get(POS_PRODUCT_IMAGE_PATH,   filename);
+            case "category"      -> Paths.get(CATEGORY_IMAGE_PATH,      filename);
+            case "variant"       -> Paths.get(VARIANT_IMAGE_PATH,       filename);
+            case "ingredient"    -> Paths.get(INGREDIENT_IMAGE_PATH,    filename);
+            case "seller-import" -> Paths.get(SELLER_IMPORT_IMAGE_PATH, filename); // ← THÊM
+            default              -> null;
         };
     }
 

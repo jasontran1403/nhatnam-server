@@ -125,8 +125,16 @@ public class PosService {
     // ════════════════════════════════════════
 
     public boolean isFirstShiftOfDay(String shiftDate, Long storeId) {
-        return !shiftRepo.existsShiftByStoreAndDate(storeId, shiftDate);
+        boolean existsClosed = shiftRepo.existsShiftByStoreAndDateAndStatus(
+                storeId, shiftDate, ShiftStatus.CLOSED);
+        boolean existsAny    = shiftRepo.existsShiftByStoreAndDate(storeId, shiftDate);
+
+        log.info("[SHIFT DEBUG] isFirstShiftOfDay: date={} storeId={} | existsAny={} existsClosed={}",
+                shiftDate, storeId, existsAny, existsClosed);
+
+        return !existsClosed;
     }
+
 
     // ════════════════════════════════════════
     // CATEGORY — lọc theo storeId
@@ -196,8 +204,10 @@ public class PosService {
     public PosIngredientResponse createIngredient(CreatePosIngredientRequest req, Long storeId) {
         long now = System.currentTimeMillis();
         PosIngredient ing = PosIngredient.builder()
-                .storeId(storeId)                          // ← gán storeId
+                .storeId(storeId)
                 .name(req.getName()).imageUrl(req.getImageUrl())
+                .unit(req.getUnit() != null && !req.getUnit().isBlank()   // ← THÊM
+                        ? req.getUnit() : "Cái")
                 .unitPerPack(req.getUnitPerPack() != null ? req.getUnitPerPack() : 1)
                 .displayOrder(req.getDisplayOrder() != null ? req.getDisplayOrder() : 0)
                 .ingredientType(req.getIngredientType() != null ? req.getIngredientType() : IngredientType.MAIN)
@@ -216,6 +226,8 @@ public class PosService {
         if (req.getDisplayOrder() != null)  ing.setDisplayOrder(req.getDisplayOrder());
         if (req.getIngredientType() != null) ing.setIngredientType(req.getIngredientType());
         if (req.getAddonPrice() != null)    ing.setAddonPrice(req.getAddonPrice());
+        if (req.getUnit() != null && !req.getUnit().isBlank()) ing.setUnit(req.getUnit()); // ← THÊM
+        if (req.getName() != null)          ing.setName(req.getName());
         ing.setUpdatedAt(System.currentTimeMillis());
         return toIngredientResponse(ingredientRepo.save(ing));
     }
@@ -562,9 +574,19 @@ public class PosService {
     }
 
     public List<PosShiftResponse> getShiftsByDate(String date, Long storeId) {
-        return shiftRepo.findShiftsByStoreAndDate(storeId, date)
-                .stream().map(this::toShiftResponse).collect(Collectors.toList());
+        List<PosShift> shifts = shiftRepo.findShiftsByStoreAndDate(storeId, date);
+
+        log.info("[SHIFT DEBUG] getShiftsByDate: date={} storeId={} | found={} shifts",
+                date, storeId, shifts.size());
+
+        shifts.forEach(s -> log.info("[SHIFT DEBUG]   shift id={} status={} openedBy={} date={}",
+                s.getId(), s.getStatus(),
+                s.getOpenedBy() != null ? s.getOpenedBy().getId() : "null",
+                s.getShiftDate()));
+
+        return shifts.stream().map(this::toShiftResponse).collect(Collectors.toList());
     }
+
 
     // ════════════════════════════════════════
     // ORDER — dùng storeId để lấy ca
@@ -573,19 +595,23 @@ public class PosService {
     @Transactional
     public PosOrderResponse createOrder(CreatePosOrderRequest req, Long userId, Long storeId) {
         System.out.println(req);
-        // Lấy ca OPEN của store (bất kể ai mở — POS store có thể có 1 ca chung)
         PosShift shift = shiftRepo.findOpenShiftByStoreId(storeId, ShiftStatus.OPEN)
                 .orElseThrow(() -> new RuntimeException("Chưa mở ca. Vui lòng mở ca trước khi tạo đơn."));
         User user = userRepo.findById(userId).orElseThrow();
         long now = System.currentTimeMillis();
         String orderCode = generateOrderCode();
 
+        // totalAmount  = tổng giá GỐC (basePrice × qty) + addon
+        // finalTotal   = tổng giá SAU GIẢM (finalUnitPrice × qty) + addon
         BigDecimal totalAmount = BigDecimal.ZERO;
+        BigDecimal finalTotal  = BigDecimal.ZERO;
         BigDecimal totalVat    = BigDecimal.ZERO;
 
         record CalcItem(
                 PosProduct product, BigDecimal basePrice, int discountPercent,
-                BigDecimal finalUnitPrice, int quantity, BigDecimal subtotal,
+                BigDecimal finalUnitPrice, int quantity,
+                BigDecimal baseSubtotal,   // basePrice × qty
+                BigDecimal subtotal,       // finalUnitPrice × qty
                 int vatPercent, BigDecimal vatAmount, BigDecimal addonAmount,
                 List<CreatePosOrderRequest.OrderItemRequest.VariantSelection> variantSelections,
                 String note, String categoryName) {}
@@ -596,7 +622,6 @@ public class PosService {
             PosProduct product = productRepo.findById(itemReq.getProductId())
                     .orElseThrow(() -> new RuntimeException("Product not found: " + itemReq.getProductId()));
 
-            // Verify product thuộc đúng store
             if (!storeId.equals(product.getStoreId()))
                 throw new IllegalArgumentException("Sản phẩm '" + product.getName() + "' không thuộc store của bạn.");
 
@@ -612,7 +637,8 @@ public class PosService {
                 PosAppMenu appMenu = appMenuRepo.findByProductAndPlatform(product, platform)
                         .orElseThrow(() -> new RuntimeException(
                                 "App menu chưa thiết lập cho " + product.getName() + " trên " + platform));
-                finalUnitPrice = appMenu.getPrice();
+                finalUnitPrice  = appMenu.getPrice();
+                basePrice       = appMenu.getPrice(); // app order: base = final (không có discount)
                 discountPercent = 0;
             } else {
                 discountPercent = itemReq.getDiscountPercent() != null ? itemReq.getDiscountPercent() : 0;
@@ -626,7 +652,11 @@ public class PosService {
                         .setScale(2, RoundingMode.HALF_UP);
             }
 
-            BigDecimal subtotal = finalUnitPrice.multiply(BigDecimal.valueOf(itemReq.getQuantity()));
+            // baseSubtotal = giá gốc × qty  (để tính totalAmount)
+            // subtotal     = giá sau giảm × qty (để tính finalTotal)
+            BigDecimal baseSubtotal = basePrice.multiply(BigDecimal.valueOf(itemReq.getQuantity()));
+            BigDecimal subtotal     = finalUnitPrice.multiply(BigDecimal.valueOf(itemReq.getQuantity()));
+
             int vatPct = product.getVatPercent() != null ? product.getVatPercent() : 0;
             BigDecimal vatAmount = subtotal.multiply(BigDecimal.valueOf(vatPct))
                     .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
@@ -645,11 +675,15 @@ public class PosService {
                 }
             }
             final BigDecimal addonTotal = addonAmount.multiply(BigDecimal.valueOf(itemReq.getQuantity()));
-            totalAmount = totalAmount.add(subtotal).add(addonTotal);
+
+            // totalAmount tính trên giá GỐC
+            totalAmount = totalAmount.add(baseSubtotal).add(addonTotal);
+            // finalTotal tính trên giá SAU GIẢM
+            finalTotal  = finalTotal.add(subtotal).add(addonTotal);
 
             String categoryName = product.getCategory() != null ? product.getCategory().getName() : null;
 
-            // Validate variant selections (logic giữ nguyên từ version cũ)
+            // Validate variant selections
             if (selections != null && !selections.isEmpty()) {
                 for (var sel : selections) {
                     PosVariant variant = variantRepo.findById(sel.getVariantId())
@@ -671,17 +705,18 @@ public class PosService {
                     }
                     Map<Long, PosVariantIngredient> viMap = variantIngredientRepo.findByVariant(variant)
                             .stream().collect(Collectors.toMap(vi -> vi.getIngredient().getId(), vi -> vi));
-                    boolean isAddon   = Boolean.TRUE.equals(variant.getIsAddonGroup());
+                    boolean isAddon     = Boolean.TRUE.equals(variant.getIsAddonGroup());
                     boolean allowRepeat = Boolean.TRUE.equals(variant.getAllowRepeat());
                     for (var s : sel.getSelectedIngredients()) {
                         PosVariantIngredient vi = viMap.get(s.getIngredientId());
                         if (vi == null)
                             throw new IllegalArgumentException("Nguyên liệu #" + s.getIngredientId() + " không tồn tại trong nhóm.");
-                        // Addon: cho phép chọn nhiều lần — bỏ qua cả 2 check allowRepeat
                         if (!isAddon && !allowRepeat && s.getSelectedCount() > 1)
                             throw new IllegalArgumentException("Nguyên liệu chỉ được chọn 1 lần.");
-                        if (!isAddon && !allowRepeat && vi.getMaxSelectableCount() != null && s.getSelectedCount() > vi.getMaxSelectableCount())
-                            throw new IllegalArgumentException(String.format("'%s' tối đa %d lần.", vi.getIngredient().getName(), vi.getMaxSelectableCount()));
+                        if (!isAddon && !allowRepeat && vi.getMaxSelectableCount() != null
+                                && s.getSelectedCount() > vi.getMaxSelectableCount())
+                            throw new IllegalArgumentException(String.format(
+                                    "'%s' tối đa %d lần.", vi.getIngredient().getName(), vi.getMaxSelectableCount()));
                     }
                     Map<String, Integer> subTotals = new HashMap<>(), subLimits = new HashMap<>();
                     for (var s : sel.getSelectedIngredients()) {
@@ -699,24 +734,24 @@ public class PosService {
                     }
                 }
             }
+
             calcs.add(new CalcItem(product, basePrice, discountPercent, finalUnitPrice,
-                    itemReq.getQuantity(), subtotal, vatPct, vatAmount, addonTotal, selections,
+                    itemReq.getQuantity(), baseSubtotal, subtotal,
+                    vatPct, vatAmount, addonTotal, selections,
                     itemReq.getNote(), categoryName));
         }
 
         PosStore store = posStoreRepo.findById(storeId)
                 .orElseThrow(() -> new RuntimeException("Store not found: " + storeId));
 
+        // ── Customer & discount ──────────────────────────────────
         PosCustomerDiscount customerDiscount = null;
         PosCustomer posCustomer = null;
         String normalizedPhone  = null;
         if (req.getCustomerPhone() != null && !req.getCustomerPhone().isBlank()) {
             normalizedPhone = PosCustomerService.normalizePhone(req.getCustomerPhone());
             posCustomer = posCustomerRepo.findByPhone(normalizedPhone).orElse(null);
-
-            // Tự động tạo nếu chưa có và có tên
-            if (posCustomer == null && req.getCustomerName() != null
-                    && !req.getCustomerName().isBlank()) {
+            if (posCustomer == null && req.getCustomerName() != null && !req.getCustomerName().isBlank()) {
                 posCustomer = posCustomerRepo.save(
                         PosCustomer.builder()
                                 .phone(normalizedPhone)
@@ -725,10 +760,12 @@ public class PosService {
             }
         }
 
+        // itemDiscount = chênh lệch giá gốc - giá sau giảm (do discount % của từng món)
+        BigDecimal itemDiscount = totalAmount.subtract(finalTotal);
 
-        PosDiscountService.DiscountResult discountResult =
-                new PosDiscountService.DiscountResult(
-                        BigDecimal.ZERO, totalAmount, false, null, false);
+        // customerDiscount = discount thêm từ voucher/khách hàng (tính trên finalTotal)
+        BigDecimal customerDiscountAmt = BigDecimal.ZERO;
+        String     discountNote        = null;
 
         if (req.getCustomerDiscountId() != null) {
             customerDiscount = customerDiscountRepo
@@ -736,34 +773,40 @@ public class PosService {
                     .orElse(null);
 
             if (customerDiscount != null) {
-                // Lấy giá món được chọn (cho ITEM type)
                 BigDecimal selectedItemPrice = null;
                 if (customerDiscount.getSelectedOption() != null
                         && customerDiscount.getSelectedOption().isItemType()
                         && req.getDiscountItemProductId() != null) {
-
                     selectedItemPrice = calcs.stream()
-                            .filter(c -> c.product().getId()
-                                    .equals(req.getDiscountItemProductId()))
+                            .filter(c -> c.product().getId().equals(req.getDiscountItemProductId()))
                             .findFirst()
-                            .map(c -> c.finalUnitPrice()
-                                    .multiply(BigDecimal.valueOf(c.quantity())))
+                            .map(c -> c.finalUnitPrice().multiply(BigDecimal.valueOf(c.quantity())))
                             .orElse(BigDecimal.ZERO);
                 }
-
-                discountResult = posDiscountService.calculate(
-                        customerDiscount, totalAmount, selectedItemPrice);
+                // Tính customer discount dựa trên finalTotal (giá sau giảm item)
+                PosDiscountService.DiscountResult dr =
+                        posDiscountService.calculate(customerDiscount, finalTotal, selectedItemPrice);
+                customerDiscountAmt = dr.discountAmount();
+                discountNote        = dr.note();
             }
         }
+
+        // Tổng discount = item discount + customer discount
+        BigDecimal totalDiscount  = itemDiscount.add(customerDiscountAmt);
+        BigDecimal realFinalAmount = finalTotal.subtract(customerDiscountAmt);
+
+        // Đảm bảo finalAmount không âm
+        if (realFinalAmount.compareTo(BigDecimal.ZERO) < 0)
+            realFinalAmount = BigDecimal.ZERO;
 
         PosOrder order = PosOrder.builder()
                 .orderCode(orderCode).shift(shift).createdBy(user).store(store)
                 .orderSource(req.getOrderSource()).status(PosOrderStatus.COMPLETED)
                 .note(req.getNote())
-                .totalAmount(totalAmount)
-                .discountAmount(discountResult.discountAmount())
-                .discountNote(discountResult.note())
-                .finalAmount(discountResult.finalAmount())
+                .totalAmount(totalAmount)           // giá GỐC trước mọi discount
+                .discountAmount(totalDiscount)      // tổng discount (item + customer)
+                .discountNote(discountNote)
+                .finalAmount(realFinalAmount)       // giá cuối sau tất cả discount
                 .customerPhone(normalizedPhone)
                 .customerName(req.getCustomerName())
                 .paymentMethod(req.getPaymentMethod())
@@ -771,19 +814,16 @@ public class PosService {
 
         order = orderRepo.save(order);
 
-        // ── Commit discount + total spend ────────────────────────
+        // Commit customer discount + cộng total_spend
         if (customerDiscount != null) {
-            posDiscountService.commitDiscount(
-                    customerDiscount, discountResult.discountAmount());
+            posDiscountService.commitDiscount(customerDiscount, customerDiscountAmt);
         }
-
-        // Cộng vào total_spend của customer (all-time)
         if (posCustomer != null) {
-            posCustomer.setTotalSpend(
-                    posCustomer.getTotalSpend().add(discountResult.finalAmount()));
+            posCustomer.setTotalSpend(posCustomer.getTotalSpend().add(realFinalAmount));
             posCustomerRepo.save(posCustomer);
         }
 
+        // ── Save order items + ingredients ──────────────────────
         for (CalcItem calc : calcs) {
             PosOrderItem orderItem = PosOrderItem.builder()
                     .order(order).productId(calc.product().getId())
@@ -809,14 +849,17 @@ public class PosService {
                                 .ingredientName(ing.getName()).ingredientImageUrl(ing.getImageUrl())
                                 .selectedCount(s.getSelectedCount())
                                 .quantityUsed((vi != null ? vi.getStockDeductPerUnit() : BigDecimal.ONE)
-                                        .multiply(BigDecimal.valueOf(s.getSelectedCount())))
+                                        .multiply(BigDecimal.valueOf(s.getSelectedCount()))
+                                        .multiply(BigDecimal.valueOf(calc.quantity())))
                                 .variantId(variant.getId()).variantGroupName(variant.getGroupName()).build());
                     }
                 }
                 orderItemIngredientRepo.saveAll(ingList);
             }
         }
-        log.info("[POS] Order created: {} | store={} | total={}", orderCode, storeId, totalAmount);
+
+        log.info("[POS] Order created: {} | store={} | total={} discount={} final={}",
+                orderCode, storeId, totalAmount, totalDiscount, realFinalAmount);
         return toOrderResponse(orderRepo.findById(order.getId()).orElseThrow());
     }
 
@@ -935,7 +978,9 @@ public class PosService {
                 .unitPerPack(i.getUnitPerPack()).isActive(i.getIsActive())
                 .displayOrder(i.getDisplayOrder() != null ? i.getDisplayOrder() : 0)
                 .ingredientType(i.getIngredientType() != null ? i.getIngredientType() : IngredientType.MAIN)
-                .addonPrice(i.getAddonPrice() != null ? i.getAddonPrice() : BigDecimal.ZERO).build();
+                .addonPrice(i.getAddonPrice() != null ? i.getAddonPrice() : BigDecimal.ZERO)
+                .unit(i.getUnit() != null ? i.getUnit() : "Cái")   // ← THÊM
+                .build();
     }
 
     private PosProductResponse toProductResponse(PosProduct p) {
@@ -1010,13 +1055,34 @@ public class PosService {
                 .map(d -> PosShiftDenominationResponse.builder().denomination(d.getDenomination())
                         .quantity(d.getQuantity()).total((long) d.getDenomination() * d.getQuantity()).build())
                 .collect(Collectors.toList());
+        Map<Long, Integer> importMap = new HashMap<>();
+        stockImportRepo.sumPackQtyByShiftId(s.getId())
+                .forEach(row -> importMap.put((Long) row[0], ((Number) row[1]).intValue()));
+
+        // Bước 2: soldMap — tổng quantityUsed của từng nguyên liệu trong ca
+        Map<Long, Integer> soldMap = new HashMap<>();
+        orderItemIngredientRepo.findByShiftId(s.getId())
+                .forEach(ing -> soldMap.merge(
+                        ing.getIngredientId(),
+                        ing.getQuantityUsed().setScale(0, RoundingMode.HALF_UP).intValue(),
+                        Integer::sum
+                ));
+
+        // Bước 3: build openInv — thêm cả importPackQty VÀ soldQty
         List<PosShiftInventoryResponse> openInv = openInvRepo.findByShift(s).stream()
                 .map(i -> PosShiftInventoryResponse.builder()
-                        .ingredientId(i.getIngredient().getId()).ingredientName(i.getIngredient().getName())
-                        .ingredientImageUrl(i.getIngredient().getImageUrl()).unitPerPack(i.getIngredient().getUnitPerPack())
-                        .packQuantity(i.getPackQuantity()).unitQuantity(i.getUnitQuantity())
-                        .totalUnits(i.getPackQuantity() * i.getIngredient().getUnitPerPack() + i.getUnitQuantity()).build())
+                        .ingredientId(i.getIngredient().getId())
+                        .ingredientName(i.getIngredient().getName())
+                        .ingredientImageUrl(i.getIngredient().getImageUrl())
+                        .unitPerPack(i.getIngredient().getUnitPerPack())
+                        .packQuantity(i.getPackQuantity())
+                        .unitQuantity(i.getUnitQuantity())
+                        .totalUnits(i.getPackQuantity() * i.getIngredient().getUnitPerPack() + i.getUnitQuantity())
+                        .importPackQty(importMap.getOrDefault(i.getIngredient().getId(), 0))
+                        .soldQty(soldMap.getOrDefault(i.getIngredient().getId(), 0))
+                        .build())
                 .collect(Collectors.toList());
+
         List<PosShiftInventoryResponse> closeInv = closeInvRepo.findByShift(s).stream()
                 .map(i -> PosShiftInventoryResponse.builder()
                         .ingredientId(i.getIngredient().getId()).ingredientName(i.getIngredient().getName())
@@ -1031,6 +1097,7 @@ public class PosService {
                 .flatMap(o -> orderItemRepo.findByOrder(o).stream())
                 .map(item -> item.getVatAmount() != null ? item.getVatAmount() : BigDecimal.ZERO)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
+
         return PosShiftResponse.builder()
                 .id(s.getId()).staffName(s.getStaffName()).status(s.getStatus())
                 .shiftDate(s.getShiftDate()).isFirstShiftOfDay(s.getIsFirstShiftOfDay())
@@ -1040,6 +1107,64 @@ public class PosService {
                 .openDenominations(openDenoms).closeDenominations(closeDenoms)
                 .openInventory(openInv).closeInventory(closeInv)
                 .totalOrders(orders.size()).totalRevenue(revenue.add(totalVat)).build();
+    }
+
+    @Transactional
+    public PosShiftInventoryResponse updateOpenInventoryItem(
+            Long shiftId, Long ingredientId, int packQuantity, int unitQuantity, Long storeId) {
+
+        PosShift shift = shiftRepo.findById(shiftId)
+                .orElseThrow(() -> new RuntimeException("Shift not found: " + shiftId));
+
+        if (shift.getStatus() != ShiftStatus.OPEN)
+            throw new RuntimeException("Chỉ được chỉnh sửa khi ca đang mở.");
+
+        // ── Cập nhật openInventory ca hiện tại ──────────────────
+        PosShiftOpenInventory inv = openInvRepo
+                .findByShiftAndIngredient_Id(shiftId, ingredientId)
+                .orElseThrow(() -> new RuntimeException(
+                        "Không tìm thấy kho cho ingredient #" + ingredientId + " trong ca #" + shiftId));
+
+        inv.setPackQuantity(packQuantity);
+        inv.setUnitQuantity(unitQuantity);
+        openInvRepo.save(inv);
+
+        // ── Nếu không phải ca đầu ngày → sửa closeInventory ca trước ──
+        if (!Boolean.TRUE.equals(shift.getIsFirstShiftOfDay())) {
+            // Tìm ca đã CLOSED gần nhất cùng ngày, trước ca hiện tại
+            shiftRepo.findLatestClosedShiftByStoreAndDate(
+                    // Lấy storeId từ openedBy → PosUserStore
+                    posUserStoreRepo.findByUserId(shift.getOpenedBy().getId())
+                            .orElseThrow(() -> new RuntimeException("Store not found for shift"))
+                            .getStore().getId(),
+                    shift.getShiftDate()
+            ).ifPresent(prevShift -> {
+                closeInvRepo.findByShiftAndIngredient_Id(prevShift.getId(), ingredientId)
+                        .ifPresent(prevClose -> {
+                            prevClose.setPackQuantity(packQuantity);
+                            prevClose.setUnitQuantity(unitQuantity);
+                            closeInvRepo.save(prevClose);
+                            log.info("[POS] Synced closeInventory of shift #{} ingredient #{} → pack={} unit={}",
+                                    prevShift.getId(), ingredientId, packQuantity, unitQuantity);
+                        });
+            });
+        }
+
+        // ── Build response ───────────────────────────────────────
+        Map<Long, Integer> importMap = new HashMap<>();
+        stockImportRepo.sumPackQtyByShiftId(shiftId)
+                .forEach(row -> importMap.put((Long) row[0], ((Number) row[1]).intValue()));
+
+        return PosShiftInventoryResponse.builder()
+                .ingredientId(inv.getIngredient().getId())
+                .ingredientName(inv.getIngredient().getName())
+                .ingredientImageUrl(inv.getIngredient().getImageUrl())
+                .unitPerPack(inv.getIngredient().getUnitPerPack())
+                .packQuantity(inv.getPackQuantity())
+                .unitQuantity(inv.getUnitQuantity())
+                .totalUnits(inv.getPackQuantity() * inv.getIngredient().getUnitPerPack() + inv.getUnitQuantity())
+                .importPackQty(importMap.getOrDefault(ingredientId, 0))
+                .build();
     }
 
     private List<PosOrderItemResponse.VariantSelectionResponse> groupIngredientsByVariant(

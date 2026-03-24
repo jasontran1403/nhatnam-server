@@ -18,4 +18,5 @@ public class CreatePosIngredientRequest {
 
     private IngredientType ingredientType;  // default MAIN
     private BigDecimal addonPrice;          // default 0
+    private String unit;
 }

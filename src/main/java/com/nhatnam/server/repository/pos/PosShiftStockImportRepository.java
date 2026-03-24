@@ -15,4 +15,10 @@ public interface PosShiftStockImportRepository extends JpaRepository<PosShiftSto
     List<PosShiftStockImport> findByShiftWithIngredient(@Param("shift") PosShift shift);
 
     List<PosShiftStockImport> findByShift_IdOrderByImportedAtDesc(Long shiftId);
+
+     @Query("SELECT i.ingredient.id, COALESCE(SUM(i.packQty), 0) " +
+        "FROM PosShiftStockImport i " +
+        "WHERE i.shift.id = :shiftId " +
+        "GROUP BY i.ingredient.id")
+    List<Object[]> sumPackQtyByShiftId(@Param("shiftId") Long shiftId);
 }

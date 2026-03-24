@@ -32,6 +32,9 @@ public class InventoryLog {
     @Column(nullable = false)
     private InventoryAction action; // IMPORT (nhập), EXPORT (xuất), ADJUST (điều chỉnh)
 
+    @Column(name = "receipt_image_url")
+    private String receiptImageUrl;  // ← THÊM
+
     @Column(nullable = false, precision = 10, scale = 2)
     private BigDecimal quantity; // Số lượng thay đổi (dương = nhập, âm = xuất)
 

@@ -12,4 +12,8 @@ public class PosShiftInventoryResponse {
     private Integer unitQuantity;
     // Tổng quy về lẻ = packQuantity * unitPerPack + unitQuantity
     private Integer totalUnits;
+    @Builder.Default
+    private Integer importPackQty = 0;   // tổng bịch nhập trong ca
+    @Builder.Default
+    private Integer soldQty = 0;
 }

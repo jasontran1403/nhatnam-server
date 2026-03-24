@@ -29,11 +29,6 @@ public class AdminController {
 
     private static final ZoneId VN_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
 
-    @GetMapping("/test")
-    public ResponseEntity<ApiResponse> test() {
-        return ResponseEntity.ok(ApiResponse.success(null, "success"));
-    }
-
     @GetMapping("/dashboard/pos")
     public ResponseEntity<ApiResponse<PosDashboardDto.PosDashboard>> getPosDashboard(
             @RequestParam(defaultValue = "30DAYS") String period,

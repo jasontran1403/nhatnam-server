@@ -467,10 +467,37 @@ public class PosController {
         }
     }
 
+    private final PosUserStoreRepository posUserStoreRepo;
+
+    @PatchMapping("/shifts/{shiftId}/open-inventory/{ingredientId}")
+    public ResponseEntity<ApiResponse<PosShiftInventoryResponse>> updateOpenInventoryItem(
+            @PathVariable Long shiftId,
+            @PathVariable Long ingredientId,
+            @RequestBody UpdateOpenInventoryRequest req,
+            Authentication authentication
+    ) {
+        try {
+            User user    = (User) authentication.getPrincipal();
+            Long storeId = posUserStoreRepo.findByUserId(user.getId())
+                    .orElseThrow(() -> new RuntimeException("Chưa gán store"))
+                    .getStore().getId();
+
+            PosShiftInventoryResponse result = posService.updateOpenInventoryItem(
+                    shiftId, ingredientId,
+                    req.getPackQuantity(), req.getUnitQuantity(),
+                    storeId);
+
+            return ResponseEntity.ok(ApiResponse.success(result, "Đã cập nhật kho đầu ca"));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest()
+                    .body(ApiResponse.error(400, e.getMessage()));
+        }
+    }
+
     @DeleteMapping("/ingredients/{id}")
     public ResponseEntity<ApiResponse<Object>> deleteIngredient(@PathVariable Long id) {
         try {
-            posService.deleteIngredient(id);
+//            posService.deleteIngredient(id);
             return ResponseEntity.ok(ApiResponse.success(null, "Ingredient deleted"));
         } catch (RuntimeException e) {
             return ResponseEntity.ok(ApiResponse.error(StatusCode.NOT_FOUND, e.getMessage()));

@@ -64,4 +64,9 @@ public interface PosOrderRepository extends JpaRepository<PosOrder, Long> {
     List<PosOrder> findByCreatedAtBetweenOrderByCreatedAtAsc(
             @Param("fromMs") Long fromMs,
             @Param("toMs")   Long toMs);
+
+    @Query("SELECT oii FROM PosOrderItemIngredient oii " +
+        "WHERE oii.orderItem.order.shift.id = :shiftId " +
+        "AND oii.orderItem.order.status != com.nhatnam.server.enumtype.PosOrderStatus.CANCELLED")
+    List<PosOrderItemIngredient> findByShiftId(@Param("shiftId") Long shiftId);
 }

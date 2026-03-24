@@ -16,6 +16,12 @@ public class ManualImportRequest {
     @Valid
     private List<ImportItem> items;
 
+    /** Mã phiếu nhà cung cấp — optional */
+    private String supplierRef;
+
+    /** URL ảnh phiếu giao hàng — được set bởi server sau khi upload */
+    private String receiptImageUrl;
+
     @Data
     public static class ImportItem {
 

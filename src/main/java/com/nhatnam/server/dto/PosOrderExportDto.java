@@ -7,7 +7,7 @@ public record PosOrderExportDto(Long storeId, String storeName, String storeAddr
                                 String shiftStaffName, Long shiftOpenTime, Long shiftCloseTime, Long orderId,
                                 String orderCode, String customerName, String customerPhone, BigDecimal totalAmount,
                                 BigDecimal finalAmount, String orderSource, String paymentMethod, Long createdAt,
-                                String categoryName, String productName, BigDecimal finalUnitPrice,
+                                String categoryName, String productName, BigDecimal basePrice, BigDecimal finalUnitPrice,
                                 BigDecimal discountPercent, Integer quantity, BigDecimal vatAmount) {
 
     // ── Computed helpers ──────────────────────────────────────────

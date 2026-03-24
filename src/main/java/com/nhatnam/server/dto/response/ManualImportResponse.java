@@ -14,6 +14,11 @@ public class ManualImportResponse {
     private String batchCode;
 
     private int totalItems;
+    private String supplierRef;
+
+    /** URL ảnh phiếu giao hàng — optional */
+    private String receiptImageUrl;
+
     private List<ImportItemResult> items;
 
     @Data

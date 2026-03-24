@@ -22,18 +22,20 @@ import java.util.List;
 @Log4j2
 public class ManualImportServiceImpl implements ManualImportService {
 
-    private final IngredientRepository ingredientRepository;
-    private final InventoryLogRepository inventoryLogRepository;
-    private final ImportBatchSequenceRepository batchSeqRepository;
+    private final IngredientRepository          ingredientRepository;
+    private final InventoryLogRepository         inventoryLogRepository;
+    private final ImportBatchSequenceRepository  batchSeqRepository;
 
-    // ── Sinh mã batch IS-YYYYMMDD-XXXXXXXXXX (10 chữ số, pessimistic lock) ──
+    // ── Sinh mã batch IS-YYYYMMDD-XXXXXXXXXX ─────────────────────────────────
     @Transactional
     protected String nextBatchCode() {
-        String dateKey = "IS-" + LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
+        String dateKey = "IS-" + LocalDate.now()
+                .format(DateTimeFormatter.ofPattern("yyyyMMdd"));
 
         ImportBatchSequence seq = batchSeqRepository
                 .findByDateKeyForUpdate(dateKey)
-                .orElse(ImportBatchSequence.builder().dateKey(dateKey).lastSeq(0L).build());
+                .orElse(ImportBatchSequence.builder()
+                        .dateKey(dateKey).lastSeq(0L).build());
 
         long next = seq.getLastSeq() + 1;
         seq.setLastSeq(next);
@@ -44,29 +46,26 @@ public class ManualImportServiceImpl implements ManualImportService {
     }
 
     // ── Logic hạn dùng hiệu lực ──────────────────────────────────────────────
-    /**
-     * So sánh hạn mới nhập (newExpiry) với hạn cũ đang lưu (currentExpiry):
-     * - Nếu hạn mới chưa hết VÀ (không có hạn cũ HOẶC hạn mới < hạn cũ)
-     *   → dùng hạn mới (lô sẽ hết trước)
-     * - Nếu hạn mới đã hết → giữ hạn cũ (nếu có)
-     * - Nếu không có hạn nào → null
-     *
-     * Trả về epoch-millis của hạn hiệu lực (để lưu vào ingredient).
-     */
     private Long effectiveExpiry(Long currentExpiryMs, Long newExpiryMs) {
         long now = System.currentTimeMillis();
 
-        boolean newValid  = newExpiryMs  != null && newExpiryMs  > now;
-        boolean oldValid  = currentExpiryMs != null && currentExpiryMs > now;
+        boolean newValid = newExpiryMs     != null && newExpiryMs     > now;
+        boolean oldValid = currentExpiryMs != null && currentExpiryMs > now;
 
         if (newValid) {
-            if (!oldValid) return newExpiryMs;                         // chỉ có hạn mới
-            return newExpiryMs < currentExpiryMs ? newExpiryMs : currentExpiryMs; // lấy sớm hơn
+            if (!oldValid) return newExpiryMs;
+            return newExpiryMs < currentExpiryMs ? newExpiryMs : currentExpiryMs;
         }
-        // hạn mới đã hết hoặc null
-        if (oldValid) return currentExpiryMs;                          // giữ hạn cũ
-        // cả 2 đều hết/null → trả về hạn mới nếu có (dù đã hết)
+        if (oldValid)         return currentExpiryMs;
         return newExpiryMs != null ? newExpiryMs : currentExpiryMs;
+    }
+
+    // ── Build log reason: batchCode + supplierRef (nếu có) ───────────────────
+    private String buildReason(String batchCode, String supplierRef) {
+        if (supplierRef != null && !supplierRef.isBlank()) {
+            return batchCode + " | NCC: " + supplierRef.trim();
+        }
+        return batchCode;
     }
 
     // ── Main: nhập batch ─────────────────────────────────────────────────────
@@ -74,33 +73,35 @@ public class ManualImportServiceImpl implements ManualImportService {
     @Transactional
     public ManualImportResponse importBatch(ManualImportRequest request, User actor) {
 
-        String batchCode = nextBatchCode();
-        long now = System.currentTimeMillis();
+        String batchCode    = nextBatchCode();
+        String supplierRef  = request.getSupplierRef();
+        String receiptImage = request.getReceiptImageUrl();
+        String logReason    = buildReason(batchCode, supplierRef);
+        long   now          = System.currentTimeMillis();
 
         List<ManualImportResponse.ImportItemResult> results = new ArrayList<>();
 
         for (ManualImportRequest.ImportItem item : request.getItems()) {
 
-            Ingredient ing = ingredientRepository.findByIdAndIsActiveTrue(item.getIngredientId())
+            Ingredient ing = ingredientRepository
+                    .findByIdAndIsActiveTrue(item.getIngredientId())
                     .orElseThrow(() -> new RuntimeException(
                             "Ingredient not found with ID: " + item.getIngredientId()));
 
             BigDecimal before = ing.getStockQuantity();
             BigDecimal added  = item.getQuantity();
-            BigDecimal after  = before.add(added);    // cộng dồn
+            BigDecimal after  = before.add(added);
 
             // Cập nhật tồn kho
             ing.setStockQuantity(after);
 
             // Tính hạn dùng hiệu lực
-            Long newExpiryMs  = item.getExpiryDate();
-            Long effectiveMs  = effectiveExpiry(ing.getExpiryDate(), newExpiryMs);
+            Long effectiveMs = effectiveExpiry(ing.getExpiryDate(), item.getExpiryDate());
             ing.setExpiryDate(effectiveMs);
             ing.setUpdatedAt(now);
             ingredientRepository.save(ing);
 
-            // Ghi log
-            // IS-20260307-0000000001
+            // Ghi log — reason chứa batchCode + supplierRef (nếu có)
             InventoryLog logEntry = InventoryLog.builder()
                     .ingredient(ing)
                     .order(null)
@@ -108,14 +109,17 @@ public class ManualImportServiceImpl implements ManualImportService {
                     .quantity(added)
                     .quantityBefore(before)
                     .quantityAfter(after)
-                    .reason(batchCode)
+                    .reason(logReason)
+                    .receiptImageUrl(receiptImage)   // ← THÊM
                     .user(actor)
                     .createdAt(now)
                     .build();
             inventoryLogRepository.save(logEntry);
 
-            log.info("[IMPORT] {} | {} +{} → {} | batch={}",
-                    ing.getName(), before, added, after, batchCode);
+            log.info("[IMPORT] {} | {} +{} → {} | batch={} | supplier={} | hasImage={}",
+                    ing.getName(), before, added, after, batchCode,
+                    supplierRef != null ? supplierRef : "-",
+                    receiptImage != null ? "yes" : "no");
 
             results.add(ManualImportResponse.ImportItemResult.builder()
                     .ingredientId(ing.getId())
@@ -125,16 +129,20 @@ public class ManualImportServiceImpl implements ManualImportService {
                     .quantityBefore(before)
                     .quantityAfter(after)
                     .effectiveExpiryDate(effectiveMs)
-                    .logReason(batchCode)
+                    .logReason(logReason)
                     .build());
         }
 
-        log.info("[IMPORT] Batch {} completed: {} items by user {}",
-                batchCode, results.size(), actor.getUsername());
+        log.info("[IMPORT] Batch {} completed: {} items by {} | supplier={} | receiptImage={}",
+                batchCode, results.size(), actor.getUsername(),
+                supplierRef  != null ? supplierRef  : "-",
+                receiptImage != null ? receiptImage : "-");
 
         return ManualImportResponse.builder()
                 .batchCode(batchCode)
                 .totalItems(results.size())
+                .supplierRef(supplierRef)            // ← trả về cho client
+                .receiptImageUrl(receiptImage)       // ← trả về cho client
                 .items(results)
                 .build();
     }
