@@ -18,6 +18,7 @@ public class PosOrderResponse {
 
     private BigDecimal totalAmount;
     private BigDecimal finalAmount;
+    private BigDecimal discountAmount;
     private BigDecimal totalVat;
     private String note;
 

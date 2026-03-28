@@ -4,8 +4,11 @@ import com.nhatnam.server.dto.DashboardDto;
 import com.nhatnam.server.dto.PosDashboardDto;
 import com.nhatnam.server.dto.response.ApiResponse;
 import com.nhatnam.server.entity.User;
+import com.nhatnam.server.entity.pos.PosCustomer;
+import com.nhatnam.server.repository.pos.PosCustomerRepository;
 import com.nhatnam.server.repository.pos.PosStoreRepository;
 import com.nhatnam.server.repository.pos.PosUserStoreRepository;
+import com.nhatnam.server.service.PosCustomerService;
 import com.nhatnam.server.service.serviceimpl.DashboardService;
 import com.nhatnam.server.utils.PosOrderExportService;
 import com.nhatnam.server.utils.TelegramService;
@@ -16,6 +19,9 @@ import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
 import java.time.*;
+import java.util.LinkedHashMap;
+import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 
 @RestController
@@ -26,8 +32,158 @@ public class AdminController {
 
     private final DashboardService dashboardService;
     private final PosUserStoreRepository posUserStoreRepository;
+    private final PosCustomerRepository posCustomerRepo;
+    private final PosCustomerService posCustomerService;
 
     private static final ZoneId VN_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
+
+    @GetMapping("/pos-customers")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getPosCustomers(
+            @RequestParam(required = false) String search,
+            @RequestParam(defaultValue = "0")  int page,
+            @RequestParam(defaultValue = "50") int size,
+            Authentication auth
+    ) {
+        try {
+            User user    = (User) auth.getPrincipal();
+            Long storeId = extractStoreId(user.getId());
+
+            var stream = posCustomerRepo.findByStoreId(storeId)
+                    .stream()
+                    .sorted((a, b) -> Long.compare(
+                            b.getCreatedAt() != null ? b.getCreatedAt() : 0,
+                            a.getCreatedAt() != null ? a.getCreatedAt() : 0));
+
+            if (search != null && !search.isBlank()) {
+                final var q = search.toLowerCase();
+                stream = stream.filter(c ->
+                        c.getName().toLowerCase().contains(q) ||
+                                c.getPhone().contains(q)
+                );
+            }
+
+            var allList = stream.map(this::_toPosMap).toList();
+            int total = allList.size();
+            int start = page * size;
+            int end   = Math.min(start + size, total);
+            var content = start >= total ? List.of() : allList.subList(start, end);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("content",     content);
+            result.put("totalItems",  total);
+            result.put("currentPage", page);
+            result.put("totalPages",  (int) Math.ceil((double) total / size));
+
+            return ResponseEntity.ok(ApiResponse.success(result, "OK"));
+        } catch (Exception e) {
+            log.error("[ADMIN] getPosCustomers error", e);
+            return ResponseEntity.internalServerError()
+                    .body(ApiResponse.error(500, e.getMessage()));
+        }
+    }
+
+    // ── Lấy chi tiết 1 POS customer ──────────────────────────────
+    // GET /api/admin/pos-customers/{id}
+    @GetMapping("/pos-customers/{id}")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getPosCustomerById(
+            @PathVariable Long id, Authentication auth) {
+        try {
+            User user    = (User) auth.getPrincipal();
+            Long storeId = extractStoreId(user.getId());
+            PosCustomer c = posCustomerRepo.findById(id)
+                    .orElseThrow(() -> new RuntimeException("Không tìm thấy KH #" + id));
+            if (!storeId.equals(c.getStoreId()))
+                throw new RuntimeException("KH không thuộc store của bạn");
+            return ResponseEntity.ok(ApiResponse.success(_toPosMap(c), "OK"));
+        } catch (RuntimeException e) {
+            return ResponseEntity.internalServerError()
+                    .body(ApiResponse.error(404, e.getMessage()));
+        }
+    }
+
+    // ── Tạo mới POS customer ──────────────────────────────────────
+    // POST /api/admin/pos-customers
+    @PostMapping("/pos-customers")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> createPosCustomer(
+            @RequestBody Map<String, String> req, Authentication auth) {
+        try {
+            User user    = (User) auth.getPrincipal();
+            Long storeId = extractStoreId(user.getId());
+
+            String phone = req.get("phone");
+            String name  = req.get("name");
+            if (phone == null || phone.isBlank())
+                return ResponseEntity.ok(ApiResponse.error(400, "Thiếu số điện thoại"));
+            if (name == null || name.isBlank())
+                return ResponseEntity.ok(ApiResponse.error(400, "Thiếu tên"));
+
+            PosCustomer c = posCustomerService.createOrUpdate(
+                    phone, name, storeId,
+                    req.get("dateOfBirth"),
+                    req.get("deliveryAddress"),
+                    req.get("referredByPhone"));
+
+            return ResponseEntity.ok(ApiResponse.success(_toPosMap(c), "OK"));
+        } catch (Exception e) {
+            return ResponseEntity.ok(ApiResponse.error(400, e.getMessage()));
+        }
+    }
+
+    // ── Cập nhật POS customer ─────────────────────────────────────
+    // PUT /api/admin/pos-customers/{id}
+    @PutMapping("/pos-customers/{id}")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> updatePosCustomer(
+            @PathVariable Long id,
+            @RequestBody Map<String, String> req,
+            Authentication auth) {
+        try {
+            User user    = (User) auth.getPrincipal();
+            Long storeId = extractStoreId(user.getId());
+            PosCustomer c = posCustomerRepo.findById(id)
+                    .orElseThrow(() -> new RuntimeException("Không tìm thấy KH #" + id));
+            if (!storeId.equals(c.getStoreId()))
+                throw new RuntimeException("KH không thuộc store của bạn");
+
+            // Update cho phép: name, deliveryAddress, dateOfBirth
+            // Không cho đổi phone, referredBy
+            if (req.containsKey("name") && req.get("name") != null)
+                c.setName(req.get("name").trim());
+            if (req.containsKey("deliveryAddress"))
+                c.setDeliveryAddress(req.get("deliveryAddress"));
+            if (req.containsKey("dateOfBirth"))
+                c.setDateOfBirth(req.get("dateOfBirth"));
+
+            c = posCustomerRepo.save(c);
+            return ResponseEntity.ok(ApiResponse.success(_toPosMap(c), "Cập nhật thành công"));
+        } catch (RuntimeException e) {
+            return ResponseEntity.ok(ApiResponse.error(400, e.getMessage()));
+        }
+    }
+
+    // ── Private helper ────────────────────────────────────────────
+
+    private Long extractStoreId(Long userId) {
+        return posUserStoreRepository.findByUserId(userId)
+                .orElseThrow(() -> new RuntimeException(
+                        "Tài khoản chưa được gán vào store nào."))
+                .getStore().getId();
+    }
+
+    private Map<String, Object> _toPosMap(PosCustomer c) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id",                   c.getId());
+        m.put("phone",                c.getPhone());
+        m.put("name",                 c.getName());
+        m.put("storeId",              c.getStoreId());
+        m.put("totalSpend",           c.getTotalSpend());
+        m.put("dateOfBirth",          c.getDateOfBirth());
+        m.put("deliveryAddress",      c.getDeliveryAddress());
+        m.put("referredByCustomerId", c.getReferredByCustomerId());
+        m.put("referredByName",       c.getReferredByName());
+        m.put("referredByPhone",      c.getReferredByPhone());
+        m.put("createdAt",            c.getCreatedAt());
+        return m;
+    }
 
     @GetMapping("/dashboard/pos")
     public ResponseEntity<ApiResponse<PosDashboardDto.PosDashboard>> getPosDashboard(

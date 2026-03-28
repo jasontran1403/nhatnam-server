@@ -13,6 +13,9 @@ import java.util.Optional;
 
 @Repository
 public interface CustomerRepository extends JpaRepository<Customer, Long> {
+     List<Customer> findByIsActiveTrueOrderByCustomerCodeAscNameAsc();
+     List<Customer> findByCustomerCodeContainingIgnoreCaseAndIsActiveTrue(String code);
+     Optional<Customer> findByCustomerCode(String customerCode);
 
     // Tìm theo số điện thoại
     Optional<Customer> findByPhone(String phone);

@@ -18,16 +18,16 @@ public class TelegramService {
     private static final String BASE_URL = "https://api.telegram.org/bot" + BOT_TOKEN;
 
     // Mapping tên group → chatId (dễ mở rộng sau này)
-//    private static final Map<String, Long> GROUP_CHAT_IDS = Map.of(
-//            "pos",     -1003620498133L,
-//            "seller",  -1003893473390L,
-//            "admin",  -1003893473390L
-//    );
     private static final Map<String, Long> GROUP_CHAT_IDS = Map.of(
-            "pos",     -5134733925L,
-            "seller",  -5134733925L,
-            "admin",  -5134733925L
+            "pos",     -1003620498133L,
+            "seller",  -1003893473390L,
+            "admin",  -1003893473390L
     );
+//    private static final Map<String, Long> GROUP_CHAT_IDS = Map.of(
+//            "pos",     -5134733925L,
+//            "seller",  -5134733925L,
+//            "admin",  -5134733925L
+//    );
 
     private final RestTemplate restTemplate = new RestTemplate();
 

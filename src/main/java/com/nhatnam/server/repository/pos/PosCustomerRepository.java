@@ -14,4 +14,6 @@ public interface PosCustomerRepository extends JpaRepository<PosCustomer, Long> 
     Optional<PosCustomer> findByPhone(String phone);
 
     List<PosCustomer> findByPhoneContaining(String phone);
+
+    List<PosCustomer> findByStoreId(long storeId);
 }

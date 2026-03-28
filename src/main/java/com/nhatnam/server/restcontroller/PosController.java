@@ -13,6 +13,7 @@ import com.nhatnam.server.service.PosCustomerService;
 import com.nhatnam.server.service.PosExcelReportService;
 import com.nhatnam.server.service.PosService;
 import com.nhatnam.server.service.PosDiscountService;
+import com.nhatnam.server.utils.PosReportAsyncService;
 import com.nhatnam.server.utils.TelegramService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
@@ -24,6 +25,7 @@ import org.springframework.security.core.userdetails.UserDetails;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.format.DateTimeFormatter;
 import java.util.LinkedHashMap;
@@ -52,57 +54,68 @@ public class PosController {
     public ResponseEntity<ApiResponse<List<Map<String, Object>>>> searchCustomers(
             @RequestParam String phone) {
         var list = posCustomerService.search(phone)
-                .stream().map(c -> {
-                    Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("id",         c.getId());
-                    m.put("phone",      c.getPhone());
-                    m.put("name",       c.getName());
-                    m.put("totalSpend", c.getTotalSpend());
-                    return m;
-                }).toList();
+                .stream()
+                .map(this::_toMap)
+                .toList();
         return ResponseEntity.ok(ApiResponse.success(list, "OK"));
     }
 
-    /** Lấy tất cả khách (cho trang quản lý) */
     @GetMapping("/customers")
-    public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getAllCustomers() {
-        var list = posCustomerRepo.findAll()
+    public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getAllCustomers(Authentication auth) {
+        var userId  = extractUserId(auth);
+        var storeId = extractStoreId(userId);
+
+        var list = posCustomerRepo.findByStoreId(storeId)
                 .stream()
                 .sorted((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()))
-                .map(c -> {
-                    Map<String, Object> m = new LinkedHashMap<>();
-                    m.put("id",         c.getId());
-                    m.put("phone",      c.getPhone());
-                    m.put("name",       c.getName());
-                    m.put("totalSpend", c.getTotalSpend());
-                    m.put("createdAt",  c.getCreatedAt());
-                    return m;
-                }).toList();
+                .map(this::_toMap)
+                .toList();
+
         return ResponseEntity.ok(ApiResponse.success(list, "OK"));
     }
 
-    /** Tạo mới hoặc cập nhật tên (upsert by phone) */
     @PostMapping("/customers")
     public ResponseEntity<ApiResponse<Map<String, Object>>> createOrUpdateCustomer(
-            @RequestBody Map<String, String> req) {
+            @RequestBody Map<String, String> req, Authentication auth) {
         try {
-            String phone = req.get("phone");
-            String name  = req.get("name");
+            String phone           = req.get("phone");
+            String name            = req.get("name");
+            String dateOfBirth     = req.get("dateOfBirth");     // nullable
+            String deliveryAddress = req.get("deliveryAddress"); // nullable
+            String referredByPhone = req.get("referredByPhone"); // nullable, chỉ set lần đầu
+
             if (phone == null || phone.isBlank())
                 return ResponseEntity.ok(ApiResponse.error(400, "Thiếu số điện thoại"));
             if (name == null || name.isBlank())
                 return ResponseEntity.ok(ApiResponse.error(400, "Thiếu tên khách hàng"));
 
-            PosCustomer c = posCustomerService.createOrUpdate(phone, name);
-            Map<String, Object> m = new LinkedHashMap<>();
-            m.put("id",    c.getId());
-            m.put("phone", c.getPhone());
-            m.put("name",  c.getName());
-            return ResponseEntity.ok(ApiResponse.success(m, "OK"));
+            var userId  = extractUserId(auth);
+            var storeId = extractStoreId(userId);
+
+            PosCustomer c = posCustomerService.createOrUpdate(
+                    phone, name, storeId, dateOfBirth, deliveryAddress, referredByPhone);
+
+            return ResponseEntity.ok(ApiResponse.success(_toMap(c), "OK"));
         } catch (Exception e) {
             return ResponseEntity.ok(ApiResponse.error(400, e.getMessage()));
         }
     }
+
+    private Map<String, Object> _toMap(PosCustomer c) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id",                   c.getId());
+        m.put("phone",                c.getPhone());
+        m.put("name",                 c.getName());
+        m.put("totalSpend",           c.getTotalSpend());
+        m.put("dateOfBirth",          c.getDateOfBirth());
+        m.put("deliveryAddress",      c.getDeliveryAddress());
+        m.put("referredByCustomerId", c.getReferredByCustomerId());
+        m.put("referredByName",       c.getReferredByName());
+        m.put("referredByPhone",      c.getReferredByPhone());
+        m.put("createdAt",            c.getCreatedAt());
+        return m;
+    }
+
 
     @GetMapping("/discounts/customer/{customerId}/active")
     public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getActiveDiscounts(
@@ -308,12 +321,19 @@ public class PosController {
             return ResponseEntity.badRequest().body(
                     ApiResponse.error(400, "Ca #" + shiftId + " chưa đóng."));
         }
+
+        final String storeName = posUserStoreRepo
+                .findByUserId(shift.getOpenedBy().getId())
+                .map(us -> us.getStore().getName())
+                .orElse("Unknown Store");
+
         CompletableFuture.runAsync(() -> {
             try {
                 byte[] data = reportService.generateShiftReport(shiftId);
+
                 telegramService.sendDocumentByGroupName("pos", data,
                         "shift-report-" + shiftId + ".xlsx",
-                        "📊 Báo cáo ca #" + shiftId, null);
+                        "📊 Báo cáo ca #" + shiftId + " - " + storeName, null);
             } catch (Exception e) {
                 log.error("[POS] exportShiftReport async error", e);
             }
@@ -340,20 +360,38 @@ public class PosController {
         }
     }
 
+    private final PosReportAsyncService asyncReportService; // ← INJECT
+
     @GetMapping("/reports/range")
     public ResponseEntity<ApiResponse<String>> exportRangeReport(
-            @RequestParam String from, @RequestParam String to) {
-        CompletableFuture.runAsync(() -> {
-            try {
-                byte[] data = reportService.generateRangeReport(from, to);
-                telegramService.sendDocumentByGroupName("pos", data,
-                        "shift-report-" + from + "_" + to + ".xlsx",
-                        "📊 Báo cáo ca từ " + from + " đến " + to, null);
-            } catch (Exception e) {
-                log.error("[POS] exportRangeReport async error", e);
-            }
-        });
-        return ResponseEntity.ok(ApiResponse.success("Đang tạo báo cáo...", "Đang xử lý"));
+            @RequestParam String from,
+            @RequestParam String to,
+            @AuthenticationPrincipal User currentUser) {
+
+        if (currentUser == null) {
+            return ResponseEntity.status(401)
+                    .body(ApiResponse.error(401, "Unauthorized"));
+        }
+
+        Long userId = currentUser.getId();
+        String storeName;
+
+        try {
+            storeName = reportService.getStoreNameByUserId(userId);
+        } catch (Exception e) {
+            return ResponseEntity.ok(ApiResponse.error(400, e.getMessage()));
+        }
+
+        final String finalStoreName = storeName;
+        final Long finalUserId = userId;
+
+        // ← Gọi async service với @Transactional
+        CompletableFuture.runAsync(() ->
+                asyncReportService.generateAndSendRangeReport(from, to, finalUserId, finalStoreName)
+        );
+
+        return ResponseEntity.ok(ApiResponse.success(
+                "Đang tạo báo cáo cho store " + storeName + "...", "Đang xử lý"));
     }
 
     // ════════════════════════════════════════
@@ -427,6 +465,7 @@ public class PosController {
             Long storeId = extractStoreId(extractUserId(auth));
             String today = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
             boolean isFirst = posService.isFirstShiftOfDay(today, storeId);
+            log.info("Is first shift: {} from storeId {}", isFirst,  storeId);
             return ResponseEntity.ok(ApiResponse.success(isFirst, "OK"));
         } catch (Exception e) {
             return ResponseEntity.ok(ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
@@ -484,7 +523,10 @@ public class PosController {
 
             PosShiftInventoryResponse result = posService.updateOpenInventoryItem(
                     shiftId, ingredientId,
-                    req.getPackQuantity(), req.getUnitQuantity(),
+                    req.getPackQuantity(),
+                    req.getUnitQuantity() != null
+                            ? req.getUnitQuantity()
+                            : BigDecimal.ZERO,   // ← BigDecimal, fallback ZERO
                     storeId);
 
             return ResponseEntity.ok(ApiResponse.success(result, "Đã cập nhật kho đầu ca"));
@@ -731,6 +773,7 @@ public class PosController {
     public ResponseEntity<ApiResponse<PosOrderResponse>> createOrder(
             @Valid @RequestBody CreatePosOrderRequest req, Authentication auth) {
         try {
+            System.out.println(req);
             Long userId  = extractUserId(auth);
             Long storeId = extractStoreId(userId);
             PosOrderResponse order = posService.createOrder(req, userId, storeId);
@@ -786,7 +829,8 @@ public class PosController {
     public ResponseEntity<ApiResponse<List<PosOrderResponse>>> getOrdersByShift(
             @PathVariable Long shiftId) {
         try {
-            return ResponseEntity.ok(ApiResponse.success(posService.getOrdersByShift(shiftId), "OK"));
+            var results = posService.getOrdersByShift(shiftId);
+            return ResponseEntity.ok(ApiResponse.success(results, "OK"));
         } catch (RuntimeException e) {
             return ResponseEntity.ok(ApiResponse.error(StatusCode.NOT_FOUND, e.getMessage()));
         }

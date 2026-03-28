@@ -18,16 +18,37 @@ public interface PosShiftRepository extends JpaRepository<PosShift, Long> {
             String fromDate, String toDate, ShiftStatus status);
     boolean existsByShiftDate(String shiftDate);
 
+    @Query("""
+        SELECT s FROM PosShift s
+        WHERE s.shiftDate BETWEEN :fromDate AND :toDate
+          AND s.status = :status
+          AND EXISTS (
+              SELECT 1 FROM PosUserStore pus 
+              WHERE pus.user.id = s.openedBy.id 
+                AND pus.store.id = (
+                    SELECT pus2.store.id FROM PosUserStore pus2 
+                    WHERE pus2.user.id = :userId
+                )
+          )
+        ORDER BY s.shiftDate DESC, s.openTime DESC
+    """)
+    List<PosShift> findShiftsByDateRangeAndUserStore(
+            @Param("fromDate") String fromDate,
+            @Param("toDate") String toDate,
+            @Param("status") ShiftStatus status,
+            @Param("userId") Long userId);
+
     //
     @Query("""
         SELECT s FROM PosShift s
         JOIN PosUserStore pus ON pus.user.id = s.openedBy.id
-        WHERE pus.store.id = :storeId AND s.status = :status
+        WHERE pus.store.id = :storeId and s.openedBy.id = :userId AND s.status = :status
         ORDER BY s.openTime DESC
         LIMIT 1
     """)
     Optional<PosShift> findOpenShiftByStoreId(
             @Param("storeId") Long storeId,
+            @Param("userId") Long userId,
             @Param("status")  ShiftStatus status);
 
     /**
@@ -112,4 +133,6 @@ public interface PosShiftRepository extends JpaRepository<PosShift, Long> {
             @Param("storeId")   Long storeId,
             @Param("shiftDate") String shiftDate,
             @Param("status")    ShiftStatus status);
+
+
 }

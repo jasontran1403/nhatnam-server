@@ -5,11 +5,13 @@ import com.nhatnam.server.config.TransactionLockManager;
 import com.nhatnam.server.dto.InvoiceDTO;
 import com.nhatnam.server.dto.request.*;
 import com.nhatnam.server.dto.response.*;
+import com.nhatnam.server.entity.Customer;
 import com.nhatnam.server.entity.InventoryLog;
 import com.nhatnam.server.enumtype.InventoryAction;
 import com.nhatnam.server.enumtype.StatusCode;
 import com.nhatnam.server.entity.User;
 import com.nhatnam.server.exception.PriceChangedException;
+import com.nhatnam.server.repository.CustomerRepository;
 import com.nhatnam.server.repository.InventoryLogRepository;
 import com.nhatnam.server.service.*;
 import com.nhatnam.server.utils.InvoicePdf;
@@ -49,6 +51,185 @@ public class SellerController {
     private final InventoryLogRepository inventoryLogRepository;
     private final ManualImportService manualImportService;
     private final ObjectMapper objectMapper;
+    private final CustomerRepository customerRepository;
+
+    @GetMapping("/customers/b2b")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getB2bCustomers(
+            @RequestParam(required = false) String type,    // COMPANY | RETAIL
+            @RequestParam(required = false) String search,  // tìm theo code/name/phone
+            @RequestParam(defaultValue = "0")   int page,
+            @RequestParam(defaultValue = "50")  int size
+    ) {
+        try {
+            var stream = customerRepository
+                    .findByIsActiveTrueOrderByCustomerCodeAscNameAsc()
+                    .stream();
+
+            if (type != null && !type.isBlank()) {
+                final var t = Customer.CustomerType.valueOf(type.toUpperCase());
+                stream = stream.filter(c -> c.getCustomerType() == t);
+            }
+            if (search != null && !search.isBlank()) {
+                final var q = search.toLowerCase();
+                stream = stream.filter(c ->
+                        (c.getCustomerCode() != null && c.getCustomerCode().toLowerCase().contains(q)) ||
+                                (c.getShortName()    != null && c.getShortName().toLowerCase().contains(q))    ||
+                                (c.getCompanyName()  != null && c.getCompanyName().toLowerCase().contains(q))  ||
+                                (c.getPhone()        != null && c.getPhone().contains(q))                      ||
+                                (c.getName()         != null && c.getName().toLowerCase().contains(q))
+                );
+            }
+
+            var allList = stream.map(this::_toB2bMap).toList();
+            int total = allList.size();
+            int start = page * size;
+            int end   = Math.min(start + size, total);
+            var content = start >= total ? List.of() : allList.subList(start, end);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("content",     content);
+            result.put("totalItems",  total);
+            result.put("currentPage", page);
+            result.put("totalPages",  (int) Math.ceil((double) total / size));
+            result.put("pageSize",    size);
+
+            return ResponseEntity.ok(ApiResponse.success(result, "OK"));
+        } catch (Exception e) {
+            log.error("[SELLER] getB2bCustomers error", e);
+            return ResponseEntity.ok(ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
+        }
+    }
+
+    // ── Lấy chi tiết 1 B2B customer ──────────────────────────────
+    // GET /api/seller/customers/b2b/{id}
+    @GetMapping("/customers/b2b/{id}")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getB2bCustomerById(
+            @PathVariable Long id) {
+        try {
+            Customer c = customerRepository.findById(id)
+                    .orElseThrow(() -> new RuntimeException("Không tìm thấy KH #" + id));
+            return ResponseEntity.ok(ApiResponse.success(_toB2bMap(c), "OK"));
+        } catch (RuntimeException e) {
+            return ResponseEntity.ok(ApiResponse.error(StatusCode.NOT_FOUND, e.getMessage()));
+        }
+    }
+
+    // ── Tạo mới B2B customer ──────────────────────────────────────
+    // POST /api/seller/customers/b2b
+    @PostMapping("/customers/b2b")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> createB2bCustomer(
+            @RequestBody Map<String, Object> req) {
+        try {
+            // Validate bắt buộc
+            String code = _str(req, "customerCode");
+            if (code == null || code.isBlank())
+                throw new IllegalArgumentException("Thiếu mã khách hàng (customerCode)");
+
+            String upperCode = code.trim().toUpperCase();
+            if (customerRepository.findByCustomerCode(upperCode).isPresent())
+                throw new IllegalArgumentException("Mã KH đã tồn tại: " + upperCode);
+
+            Customer c = new Customer();
+            c.setCustomerCode(upperCode);
+            _applyB2bFields(req, c, true);
+            c = customerRepository.save(c);
+            log.info("[SELLER] B2B customer created: {}", c.getCustomerCode());
+            return ResponseEntity.ok(ApiResponse.success(_toB2bMap(c), "Tạo thành công"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.ok(ApiResponse.error(StatusCode.BAD_REQUEST, e.getMessage()));
+        } catch (Exception e) {
+            log.error("[SELLER] createB2bCustomer error", e);
+            return ResponseEntity.ok(ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
+        }
+    }
+
+    // ── Cập nhật B2B customer ─────────────────────────────────────
+    // PUT /api/seller/customers/b2b/{id}
+    @PutMapping("/customers/b2b/{id}")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> updateB2bCustomer(
+            @PathVariable Long id,
+            @RequestBody Map<String, Object> req) {
+        try {
+            Customer c = customerRepository.findById(id)
+                    .orElseThrow(() -> new RuntimeException("Không tìm thấy KH #" + id));
+            // Không cho đổi customerCode khi update
+            _applyB2bFields(req, c, false);
+            c = customerRepository.save(c);
+            log.info("[SELLER] B2B customer updated: {}", c.getCustomerCode());
+            return ResponseEntity.ok(ApiResponse.success(_toB2bMap(c), "Cập nhật thành công"));
+        } catch (RuntimeException e) {
+            return ResponseEntity.ok(ApiResponse.error(StatusCode.BAD_REQUEST, e.getMessage()));
+        }
+    }
+
+    // ── Tìm theo code (autocomplete khi tạo đơn) ─────────────────
+    // GET /api/seller/customers/b2b/search?code=NOK
+    @GetMapping("/customers/b2b/search")
+    public ResponseEntity<ApiResponse<List<Map<String, Object>>>> searchB2bByCode(
+            @RequestParam String code) {
+        var list = customerRepository
+                .findByCustomerCodeContainingIgnoreCaseAndIsActiveTrue(code)
+                .stream().map(this::_toB2bMap).toList();
+        return ResponseEntity.ok(ApiResponse.success(list, "OK"));
+    }
+
+    // ── Private helpers ───────────────────────────────────────────
+
+    private void _applyB2bFields(Map<String, Object> req, Customer c, boolean isCreate) {
+        if (isCreate && req.containsKey("customerType"))
+            c.setCustomerType(Customer.CustomerType.valueOf(
+                    ((String) req.get("customerType")).toUpperCase()));
+        else if (isCreate)
+            c.setCustomerType(Customer.CustomerType.RETAIL);
+
+        _setStr(req, "companyName",     c::setCompanyName);
+        _setStr(req, "shortName",       c::setShortName);
+        _setStr(req, "taxCode",         c::setTaxCode);
+        _setStr(req, "address",         c::setAddress);
+        _setStr(req, "deliveryAddress", c::setDeliveryAddress);
+        _setStr(req, "contactName",     c::setContactName);
+        _setStr(req, "dateOfBirth",     c::setDateOfBirth);
+        _setStr(req, "phone",           c::setPhone);
+        _setStr(req, "name",            c::setName);
+        _setStr(req, "email",           c::setEmail);
+        if (req.containsKey("discountRate") && req.get("discountRate") != null)
+            c.setDiscountRate(((Number) req.get("discountRate")).intValue());
+        if (isCreate)
+            c.setIsActive(true);
+    }
+
+    private void _setStr(Map<String, Object> req, String key,
+                         java.util.function.Consumer<String> setter) {
+        if (req.containsKey(key) && req.get(key) != null)
+            setter.accept(((String) req.get(key)).trim());
+    }
+
+    private String _str(Map<String, Object> req, String key) {
+        Object v = req.get(key);
+        return v instanceof String s ? s : null;
+    }
+
+    private Map<String, Object> _toB2bMap(Customer c) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id",              c.getId());
+        m.put("customerCode",    c.getCustomerCode());
+        m.put("customerType",    c.getCustomerType() != null
+                ? c.getCustomerType().name() : "RETAIL");
+        m.put("companyName",     c.getCompanyName());
+        m.put("shortName",       c.getShortName());
+        m.put("taxCode",         c.getTaxCode());
+        m.put("address",         c.getAddress());
+        m.put("deliveryAddress", c.getDeliveryAddress());
+        m.put("contactName",     c.getContactName());
+        m.put("dateOfBirth",     c.getDateOfBirth());
+        m.put("phone",           c.getPhone());
+        m.put("name",            c.getName());
+        m.put("email",           c.getEmail());
+        m.put("discountRate",    c.getDiscountRate());
+        m.put("isActive",        c.getIsActive());
+        m.put("createdAt",       c.getCreatedAt());
+        return m;
+    }
 
     @PostMapping(
             value    = "/inventory-imports/manual",

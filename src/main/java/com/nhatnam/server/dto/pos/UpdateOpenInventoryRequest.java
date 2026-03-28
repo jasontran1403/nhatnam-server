@@ -4,10 +4,12 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 
+import java.math.BigDecimal;
+
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
- public class UpdateOpenInventoryRequest {
-     private Integer packQuantity = 0;
-     private Integer unitQuantity = 0;
- }
+public class UpdateOpenInventoryRequest {
+    private Integer    packQuantity = 0;
+    private BigDecimal unitQuantity = BigDecimal.ZERO;  // ← BigDecimal
+}

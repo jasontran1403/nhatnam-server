@@ -10,6 +10,13 @@ import java.util.Optional;
 
 public interface PosProductRepository extends JpaRepository<PosProduct, Long> {
 
+    @Query("SELECT p FROM PosProduct p LEFT JOIN FETCH p.category " +
+            "WHERE p.id = :productId AND p.storeId = :storeId")
+    Optional<PosProduct> findByIdWithCategoryAndStoreId(
+            @Param("productId") Long productId,
+            @Param("storeId") Long storeId
+    );
+
     /** Dùng trong PosService — lọc theo store */
     List<PosProduct> findByStoreIdAndIsActiveTrueOrderByDisplayOrderAscNameAsc(Long storeId);
 

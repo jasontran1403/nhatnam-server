@@ -7,14 +7,24 @@ import java.util.List;
 
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 public class CloseShiftRequest {
-    // Mệnh giá tiền cuối ca — bắt buộc
+
     @NotEmpty(message = "Phải nhập mệnh giá tiền cuối ca")
-    private List<OpenShiftRequest.DenominationItem> closeDenominations;
+    private List<DenominationItem> closeDenominations;
 
-    // Kiểm kho cuối ca — bắt buộc
-    @NotEmpty(message = "Phải nhập kho cuối ca")
-    private List<OpenShiftRequest.InventoryItem> closeInventory;
+    private List<InventoryItem> closeInventory;
+    private BigDecimal transferAmount;
+    private String note;
 
-    private BigDecimal transferAmount; // Chuyển khoản nếu có
-    private String note;               // Chi phí phát sinh
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class DenominationItem {
+        private Integer denomination;
+        private Integer quantity;
+    }
+
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class InventoryItem {
+        private Long       ingredientId;
+        private Integer    packQuantity;
+        private BigDecimal unitQuantity;   // ← BigDecimal
+    }
 }

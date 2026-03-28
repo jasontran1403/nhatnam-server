@@ -13,7 +13,6 @@ import com.nhatnam.server.service.FileStorageService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.log4j.Log4j2;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
@@ -22,7 +21,6 @@ import org.springframework.web.bind.annotation.*;
 
 import java.io.IOException;
 import java.util.Collections;
-import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 
@@ -34,7 +32,7 @@ public class AuthenticationController {
     private final AuthService authService;
     private final FileStorageService fileStorageService;
     private final AppVersionRepository appVersionRepository;
-//
+
 //    @Value("${stripe.secret-key}")
 //    private String stripeSecretKey;
 
