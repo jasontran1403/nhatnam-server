@@ -3,6 +3,8 @@ package com.nhatnam.server.entity.pos;
 import jakarta.persistence.*;
 import lombok.*;
 
+import java.math.BigDecimal;
+
 @Entity
 @Table(name = "pos_stores")
 @Getter
@@ -34,4 +36,12 @@ public class PosStore {
 
     @Column(name = "printer_ip", length = 50)
     private String printerIp;
+
+    @Column(name = "shopee_rate", precision = 6, scale = 4)
+    @Builder.Default
+    private BigDecimal shopeeRate = new BigDecimal("0.3305");
+
+    @Column(name = "grab_rate", precision = 6, scale = 4)
+    @Builder.Default
+    private BigDecimal grabRate = new BigDecimal("0.2904");
 }

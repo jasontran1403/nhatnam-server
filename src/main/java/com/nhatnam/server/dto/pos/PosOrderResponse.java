@@ -24,6 +24,8 @@ public class PosOrderResponse {
 
     private Long createdAt;
     private Long updatedAt;
+    private BigDecimal platformFee;
+    private BigDecimal netRevenue;
 
     private List<PosOrderItemResponse> items;
 }

@@ -135,10 +135,12 @@ public class OrderServiceImpl implements OrderService {
         log.info("[ORDER] createOrder userId={}", userId);
         long now = System.currentTimeMillis();
 
+        String companyPhone   = null;
+        String companyAddress = null;
+
         User user = userRepository.findById(userId)
                 .orElseThrow(() -> new RuntimeException("User not found: " + userId));
 
-        // Customer
         Customer customer = null;
         if (request.getCustomerId() != null)
             customer = customerRepository.findById(request.getCustomerId()).orElse(null);
@@ -146,19 +148,57 @@ public class OrderServiceImpl implements OrderService {
             customer = customerRepository.findByPhone(request.getCustomerPhone()).orElse(null);
 
         final Customer finalCustomer = customer;
-        String customerName    = firstNonBlank(request.getCustomerName(),
-                finalCustomer != null ? finalCustomer.getName() : null);
-        String customerPhone   = firstNonBlank(request.getCustomerPhone(),
-                finalCustomer != null ? finalCustomer.getPhone() : null);
-        String customerEmail   = firstNonBlank(request.getCustomerEmail(),
-                finalCustomer != null ? finalCustomer.getEmail() : null);
-        String shippingAddress = firstNonBlank(request.getShippingAddress(),
-                finalCustomer != null && !finalCustomer.getAddresses().isEmpty()
-                        ? finalCustomer.getAddresses().get(0).getAddress() : null);
+        boolean isCompany = finalCustomer != null
+                && finalCustomer.getCustomerType() == Customer.CustomerType.COMPANY;
 
-        int discountRate = (finalCustomer != null && finalCustomer.getDiscountRate() > 0)
-                ? finalCustomer.getDiscountRate()
-                : (request.getDiscountRate() != null ? request.getDiscountRate() : 0);
+        // ── Xử lý theo loại KH ───────────────────────────────────────
+        String customerType;
+        String customerName;
+        String customerPhone;
+        String customerEmail;
+        String shippingAddress;
+        String companyName     = null;
+        String shortName       = null;
+        String taxCode         = null;
+        String contactName     = null;
+        String deliveryAddress = null;
+        int    discountRate;
+
+        if (isCompany) {
+            customerType    = "COMPANY";
+            companyName     = finalCustomer.getCompanyName();
+            shortName       = finalCustomer.getShortName();
+            taxCode         = finalCustomer.getTaxCode();
+            contactName     = finalCustomer.getContactName();
+            deliveryAddress = firstNonBlank(
+                    finalCustomer.getDeliveryAddress(),
+                    finalCustomer.getAddress());
+            // customerName = tên rút gọn hoặc tên công ty để hiển thị
+            companyPhone   = finalCustomer.getCompanyPhone();
+            companyAddress = finalCustomer.getCompanyAddress();
+
+            customerName    = firstNonBlank(shortName, companyName, finalCustomer.getName());
+            customerPhone   = firstNonBlank(request.getCustomerPhone(), finalCustomer.getPhone());
+            customerEmail   = firstNonBlank(request.getCustomerEmail(), finalCustomer.getEmail());
+            shippingAddress = firstNonBlank(request.getShippingAddress(), deliveryAddress);
+            discountRate    = finalCustomer.getDiscountRate() > 0
+                    ? finalCustomer.getDiscountRate()
+                    : (request.getDiscountRate() != null ? request.getDiscountRate() : 0);
+        } else {
+            // Khách lẻ hoặc không có trong hệ thống
+            customerType    = "RETAIL";
+            customerName    = request.getCustomerName();
+            customerPhone   = firstNonBlank(request.getCustomerPhone(),
+                    finalCustomer != null ? finalCustomer.getPhone() : null);
+            customerEmail   = firstNonBlank(request.getCustomerEmail(),
+                    finalCustomer != null ? finalCustomer.getEmail() : null);
+            shippingAddress = firstNonBlank(request.getShippingAddress(),
+                    finalCustomer != null && !finalCustomer.getAddresses().isEmpty()
+                            ? finalCustomer.getAddresses().get(0).getAddress() : null);
+            discountRate    = (finalCustomer != null && finalCustomer.getDiscountRate() > 0)
+                    ? finalCustomer.getDiscountRate()
+                    : (request.getDiscountRate() != null ? request.getDiscountRate() : 0);
+        }
 
         // Draft order
         String orderCode = generateOrderCode();
@@ -182,6 +222,14 @@ public class OrderServiceImpl implements OrderService {
                 .paymentStatus(PaymentStatus.PAID)
                 .paymentMethod(request.getPaymentMethod())
                 .notes(request.getNotes())
+                .companyPhone(companyPhone)
+                .companyAddress(companyAddress)
+                .customerType(customerType)
+                .companyName(companyName)
+                .shortName(shortName)
+                .taxCode(taxCode)
+                .contactName(contactName)
+                .deliveryAddress(deliveryAddress)
                 .createdAt(now)
                 .updatedAt(now)
                 .orderItems(new ArrayList<>())
@@ -454,6 +502,7 @@ public class OrderServiceImpl implements OrderService {
     // MAP TO RESPONSE
     // ════════════════════════════════════════════════════════════════
     private OrderResponse mapToResponse(Order order) {
+
         List<OrderResponse.OrderItemResponse> itemResponses = order.getOrderItems().stream()
                 .map(item -> {
                     String priceLabel = buildPriceLabel(item);
@@ -507,6 +556,14 @@ public class OrderServiceImpl implements OrderService {
                 .paymentStatus(order.getPaymentStatus().name())
                 .paymentMethod(order.getPaymentMethod())
                 .notes(order.getNotes())
+                .customerType(order.getCustomerType())
+                .companyName(order.getCompanyName())
+                .shortName(order.getShortName())
+                .taxCode(order.getTaxCode())
+                .contactName(order.getContactName())
+                .deliveryAddress(order.getDeliveryAddress())
+                .companyPhone(order.getCompanyPhone())
+                .companyAddress(order.getCompanyAddress())
                 .createdAt(order.getCreatedAt())
                 .items(itemResponses)
                 .build();

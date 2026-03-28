@@ -45,6 +45,12 @@ public class Customer {
     @Column(name = "updated_at")
     private Long updatedAt;
 
+    @Column(name = "company_phone", length = 20)
+    private String companyPhone;   // SĐT công ty
+
+    @Column(name = "company_address", length = 300)
+    private String companyAddress; // Địa chỉ công ty (≠ delivery_address)
+
     @OneToMany(mappedBy = "customer", cascade = CascadeType.ALL,
             orphanRemoval = true, fetch = FetchType.EAGER)
     @Builder.Default

@@ -26,6 +26,15 @@ public class OrderResponse {
     private String notes;
     private Long   createdAt;
 
+    private String customerType;
+    private String companyName;
+    private String shortName;
+    private String taxCode;
+    private String contactName;
+    private String deliveryAddress;
+    private String companyPhone;
+    private String companyAddress;
+
     private List<OrderItemResponse> items;
 
     // ─────────────────────────────────────────────────────────────────

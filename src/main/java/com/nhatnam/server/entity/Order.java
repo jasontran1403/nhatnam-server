@@ -85,6 +85,30 @@ public class Order {
     @Column(columnDefinition = "TEXT")
     private String notes;
 
+    @Column(name = "customer_type", length = 20)
+    private String customerType;        // COMPANY | RETAIL
+
+    @Column(name = "company_name", length = 200)
+    private String companyName;         // Tên công ty đầy đủ
+
+    @Column(name = "short_name", length = 100)
+    private String shortName;           // Tên rút gọn
+
+    @Column(name = "tax_code", length = 20)
+    private String taxCode;             // Mã số thuế
+
+    @Column(name = "contact_name", length = 100)
+    private String contactName;         // Người liên hệ
+
+    @Column(name = "company_phone", length = 20)
+    private String companyPhone;
+
+    @Column(name = "company_address", length = 300)
+    private String companyAddress;
+
+    @Column(name = "delivery_address", columnDefinition = "TEXT")
+    private String deliveryAddress;     // Địa chỉ giao hàng
+
     @Column(name = "created_at", nullable = false)
     private Long createdAt;
 

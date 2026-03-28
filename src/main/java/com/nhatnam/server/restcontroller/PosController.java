@@ -759,6 +759,8 @@ public class PosController {
             data.put("phone",     store.getPhone());
             data.put("avatarUrl", store.getAvatarUrl());
             data.put("printerIp", store.getPrinterIp() != null ? store.getPrinterIp() : "");
+            data.put("shopeeRate", store.getShopeeRate());
+            data.put("grabRate",   store.getGrabRate());
             return ResponseEntity.ok(ApiResponse.success(data, "OK"));
         } catch (Exception e) {
             return ResponseEntity.ok(ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));

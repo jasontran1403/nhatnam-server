@@ -268,6 +268,8 @@ public class SuperAdminController {
         m.put("discountRate",    c.getDiscountRate());
         m.put("isActive",        c.getIsActive());
         m.put("createdAt",       c.getCreatedAt());
+        m.put("companyPhone",   c.getCompanyPhone());
+        m.put("companyAddress", c.getCompanyAddress());
         return m;
     }
 

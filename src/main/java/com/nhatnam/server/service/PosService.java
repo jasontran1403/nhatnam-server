@@ -1397,6 +1397,22 @@ public class PosService {
                         .build())
                 .collect(Collectors.toList());
 
+        BigDecimal platformFee = BigDecimal.ZERO;
+        BigDecimal netRevenue  = o.getFinalAmount();
+
+        if (o.getOrderSource() == OrderSource.SHOPEE_FOOD
+                || o.getOrderSource() == OrderSource.GRAB_FOOD) {
+            PosStore store = posStoreRepo.findById(o.getStore().getId()).orElse(null);
+            if (store != null) {
+                BigDecimal rate = o.getOrderSource() == OrderSource.SHOPEE_FOOD
+                        ? store.getShopeeRate() : store.getGrabRate();
+                platformFee = o.getFinalAmount()
+                        .multiply(rate)
+                        .setScale(0, RoundingMode.HALF_UP);
+                netRevenue  = o.getFinalAmount().subtract(platformFee);
+            }
+        }
+
         return PosOrderResponse.builder()
                 .id(o.getId())
                 .orderCode(o.getOrderCode())
@@ -1412,6 +1428,8 @@ public class PosService {
                 .createdAt(o.getCreatedAt())
                 .updatedAt(o.getUpdatedAt())
                 .items(items)
+                .platformFee(platformFee)
+                .netRevenue(netRevenue)
                 .build();
     }
 
