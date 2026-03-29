@@ -595,6 +595,9 @@ public class PosService {
     // ════════════════════════════════════════
     // ORDER — dùng storeId để lấy ca
     // ════════════════════════════════════════
+    // ════════════════════════════════════════════════════════════════
+    // createOrder — FIXED APP ORDER PRICING
+    // ════════════════════════════════════════════════════════════════
     @Transactional
     public PosOrderResponse createOrder(CreatePosOrderRequest req, Long userId, Long storeId) {
         PosShift shift = shiftRepo.findOpenShiftByStoreId(storeId, userId, ShiftStatus.OPEN)
@@ -604,23 +607,40 @@ public class PosService {
         long now = System.currentTimeMillis();
         String orderCode = generateOrderCode();
 
-        BigDecimal totalAmount = BigDecimal.ZERO;   // Tổng tiền gốc (trước mọi giảm)
-        BigDecimal finalAmount = BigDecimal.ZERO;   // Tổng tiền cuối cùng khách trả
+        BigDecimal totalAmount = BigDecimal.ZERO;   // Tổng raw (trước rate, trước discount)
+        BigDecimal finalAmount = BigDecimal.ZERO;   // Tổng net (sau rate, sau discount)
         BigDecimal totalVat    = BigDecimal.ZERO;
 
         boolean isAppOrder = req.getOrderSource() == OrderSource.SHOPEE_FOOD
                 || req.getOrderSource() == OrderSource.GRAB_FOOD;
 
+        // ── Lấy platform rate TRƯỚC vòng lặp ─────────────────────
+        BigDecimal platformRate = BigDecimal.ZERO;
+        AppPlatform platform = null;
+        if (isAppOrder) {
+            platform = req.getOrderSource() == OrderSource.SHOPEE_FOOD
+                    ? AppPlatform.SHOPEE_FOOD : AppPlatform.GRAB_FOOD;
+            PosStore storeForRate = posStoreRepo.findById(storeId).orElse(null);
+            if (storeForRate != null) {
+                platformRate = platform == AppPlatform.SHOPEE_FOOD
+                        ? storeForRate.getShopeeRate()
+                        : storeForRate.getGrabRate();
+                if (platformRate == null) platformRate = BigDecimal.ZERO;
+            }
+        }
+        final AppPlatform platformFinal = platform;
+
         record CalcItem(
                 PosProduct product,
-                BigDecimal basePrice,
+                BigDecimal basePrice,           // giá user nhập (raw, trước rate)
                 int discountPercent,
-                BigDecimal finalUnitPrice,      // Giá bán thực tế sau discount hoặc app price
+                BigDecimal finalUnitPrice,      // (basePrice - discount/qty) × (1-rate) [net]
                 int quantity,
-                BigDecimal subtotal,            // finalUnitPrice * qty + addon
+                BigDecimal subtotal,            // finalUnitPrice×qty + addonNet
                 int vatPercent,
                 BigDecimal vatAmount,
-                BigDecimal addonAmount,
+                BigDecimal addonAmount,         // addon net (đã × (1-rate) nếu app)
+                BigDecimal addonRaw,            // addon trước rate (để tính totalAmount)
                 List<CreatePosOrderRequest.OrderItemRequest.VariantSelection> variantSelections,
                 String note,
                 String categoryName
@@ -637,28 +657,18 @@ public class PosService {
 
             BigDecimal basePrice;
             int discountPercent = 0;
-            BigDecimal finalUnitPrice;
 
             if (isAppOrder) {
-                AppPlatform platform = req.getOrderSource() == OrderSource.SHOPEE_FOOD
-                        ? AppPlatform.SHOPEE_FOOD : AppPlatform.GRAB_FOOD;
-
-                PosAppMenu appMenu = appMenuRepo.findByProductAndPlatform(product, platform)
+                PosAppMenu appMenu = appMenuRepo.findByProductAndPlatform(product, platformFinal)
                         .orElseThrow(() -> new RuntimeException(
-                                "App menu chưa thiết lập cho " + product.getName() + " trên " + platform));
+                                "App menu chưa thiết lập cho " + product.getName() + " trên " + platformFinal));
 
-                // base_price luôn là giá App gốc (KHÔNG đổi dù có custom price)
-                basePrice = appMenu.getPrice();
+                // basePrice = giá user nhập (giá bán trên app, raw trước discount & rate)
+                basePrice = (itemReq.getFinalUnitPrice() != null
+                        && itemReq.getFinalUnitPrice().compareTo(BigDecimal.ZERO) > 0)
+                        ? itemReq.getFinalUnitPrice()
+                        : appMenu.getPrice();
 
-                // final_unit_price: dùng giá tùy chỉnh nếu có, ngược lại dùng giá App
-                if (itemReq.getFinalUnitPrice() != null
-                        && itemReq.getFinalUnitPrice().compareTo(BigDecimal.ZERO) > 0) {
-                    finalUnitPrice = itemReq.getFinalUnitPrice();
-                } else {
-                    finalUnitPrice = appMenu.getPrice();
-                }
-
-                discountPercent = 0;
             } else {
                 // ==================== ĐƠN OFFLINE ====================
                 discountPercent = itemReq.getDiscountPercent() != null ? itemReq.getDiscountPercent() : 0;
@@ -670,48 +680,39 @@ public class PosService {
                 if (!List.of(0, 10, 20, 100).contains(discountPercent))
                     throw new IllegalArgumentException("discountPercent phải là 0/10/20/100");
 
-                BigDecimal priceAfterDiscount = product.getBasePrice()
-                        .multiply(BigDecimal.ONE.subtract(
-                                BigDecimal.valueOf(discountPercent)
-                                        .divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP)));
-
-                // Làm tròn theo quy tắc: >= 500 → lên 1000, < 500 → về 0
-                finalUnitPrice = roundToThousand(priceAfterDiscount);
                 basePrice = product.getBasePrice();
             }
 
-            BigDecimal itemSubtotal = finalUnitPrice.multiply(BigDecimal.valueOf(itemReq.getQuantity()));
-
-            // Addon
-            BigDecimal addonAmount = BigDecimal.ZERO;
+            // ── Tính addon RAW (trước rate) ──────────────────────
+            BigDecimal addonRaw = BigDecimal.ZERO;
             if (itemReq.getVariantSelections() != null) {
                 for (var sel : itemReq.getVariantSelections()) {
                     if (!Boolean.TRUE.equals(sel.getIsAddonGroup())) continue;
                     for (var s : sel.getSelectedIngredients()) {
                         if (s.getAddonPriceSnapshot() != null) {
-                            addonAmount = addonAmount.add(
+                            addonRaw = addonRaw.add(
                                     s.getAddonPriceSnapshot()
                                             .multiply(BigDecimal.valueOf(s.getSelectedCount())));
                         }
                     }
                 }
             }
-            BigDecimal addonTotal = addonAmount.multiply(BigDecimal.valueOf(itemReq.getQuantity()));
+            BigDecimal addonRawTotal = addonRaw.multiply(BigDecimal.valueOf(itemReq.getQuantity()));
 
-            // VAT tính trên finalUnitPrice (không phải basePrice)
+            // ── totalAmount luôn dùng giá RAW ────────────────────
+            BigDecimal itemBaseTotal = basePrice.multiply(BigDecimal.valueOf(itemReq.getQuantity()));
+            totalAmount = totalAmount.add(itemBaseTotal).add(addonRawTotal);
+
+            // VAT tính trên basePrice raw (sẽ điều chỉnh nếu cần)
             int vatPct = product.getVatPercent() != null ? product.getVatPercent() : 0;
-            BigDecimal vatAmount = itemSubtotal.add(addonTotal)
+            BigDecimal vatAmount = itemBaseTotal.add(addonRawTotal)
                     .multiply(BigDecimal.valueOf(vatPct))
                     .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
-
-            totalAmount = totalAmount.add(itemSubtotal).add(addonTotal);  // ← cùng dùng itemSubtotal
-            finalAmount = finalAmount.add(itemSubtotal).add(addonTotal);
-
             totalVat = totalVat.add(vatAmount);
 
             String categoryName = product.getCategory() != null ? product.getCategory().getName() : null;
 
-            // Validate variant selections (giữ nguyên logic cũ của bạn)
+            // Validate variant selections
             if (itemReq.getVariantSelections() != null && !itemReq.getVariantSelections().isEmpty()) {
                 for (var sel : itemReq.getVariantSelections()) {
                     PosVariant variant = variantRepo.findById(sel.getVariantId())
@@ -725,7 +726,6 @@ public class PosService {
                     if (!isAddon) {
                         int totalSelected = sel.getSelectedIngredients().stream()
                                 .mapToInt(CreatePosOrderRequest.OrderItemRequest.SelectedIngredient::getSelectedCount).sum();
-
                         if (totalSelected < variant.getMinSelect() || totalSelected > variant.getMaxSelect())
                             throw new IllegalArgumentException(String.format(
                                     "Nhóm '%s': phải chọn %d-%d, hiện tại %d",
@@ -736,15 +736,12 @@ public class PosService {
                             .stream().collect(Collectors.toMap(vi -> vi.getIngredient().getId(), vi -> vi));
 
                     boolean allowRepeat = Boolean.TRUE.equals(variant.getAllowRepeat());
-
                     for (var s : sel.getSelectedIngredients()) {
                         PosVariantIngredient vi = viMap.get(s.getIngredientId());
                         if (vi == null)
                             throw new IllegalArgumentException("Nguyên liệu #" + s.getIngredientId() + " không tồn tại trong nhóm.");
-
                         if (!isAddon && !allowRepeat && s.getSelectedCount() > 1)
                             throw new IllegalArgumentException("Nguyên liệu chỉ được chọn 1 lần.");
-
                         if (!isAddon && !allowRepeat && vi.getMaxSelectableCount() != null
                                 && s.getSelectedCount() > vi.getMaxSelectableCount())
                             throw new IllegalArgumentException(String.format(
@@ -770,30 +767,130 @@ public class PosService {
                 }
             }
 
-            calcs.add(new CalcItem(product, basePrice, discountPercent, finalUnitPrice,
-                    itemReq.getQuantity(), itemSubtotal.add(addonTotal),
-                    vatPct, vatAmount, addonTotal,
+            // Tạm thời thêm vào calcs với finalUnitPrice = basePrice (sẽ recalc sau)
+            // addonAmount tạm = addonRawTotal (sẽ recalc sau nếu app)
+            calcs.add(new CalcItem(
+                    product, basePrice, discountPercent,
+                    basePrice,          // finalUnitPrice placeholder
+                    itemReq.getQuantity(),
+                    itemBaseTotal.add(addonRawTotal), // subtotal placeholder
+                    vatPct, vatAmount,
+                    addonRawTotal,      // addonAmount placeholder
+                    addonRawTotal,      // addonRaw
                     itemReq.getVariantSelections(), itemReq.getNote(), categoryName));
         }
 
-        // ==================== XỬ LÝ APP DISCOUNT ====================
+        // ════════════════════════════════════════════════════════
+        // XỬ LÝ APP DISCOUNT & TÍNH NET PRICES
+        // ════════════════════════════════════════════════════════
         BigDecimal appDiscountAmount = BigDecimal.ZERO;
 
         if (isAppOrder) {
-            // Mode 2: user nhập giá cuối → tính ngược ra số tiền giảm
-            if (req.getAppFinalAmount() != null
-                    && req.getAppFinalAmount().compareTo(BigDecimal.ZERO) > 0
-                    && req.getAppFinalAmount().compareTo(finalAmount) < 0) {
-                appDiscountAmount = finalAmount.subtract(req.getAppFinalAmount())
-                        .max(BigDecimal.ZERO);
-                finalAmount = req.getAppFinalAmount();
-            }
-            // Mode 1: user nhập tiền giảm
-            else if (req.getAppDiscountAmount() != null
+            // Lấy discount amount từ request
+            if (req.getAppDiscountAmount() != null
                     && req.getAppDiscountAmount().compareTo(BigDecimal.ZERO) > 0) {
-                appDiscountAmount = req.getAppDiscountAmount().min(finalAmount);
-                finalAmount = finalAmount.subtract(appDiscountAmount).max(BigDecimal.ZERO);
+                appDiscountAmount = req.getAppDiscountAmount();
+            } else if (req.getAppFinalAmount() != null
+                    && req.getAppFinalAmount().compareTo(BigDecimal.ZERO) > 0) {
+                // user nhập giá net cuối → tính ngược ra discount raw
+                // appFinalAmount = (totalAmount - discountRaw) × (1-rate)
+                // → discountRaw = totalAmount - appFinalAmount / (1-rate)
+                BigDecimal grossFromFinal = req.getAppFinalAmount()
+                        .divide(BigDecimal.ONE.subtract(platformRate), 10, RoundingMode.HALF_UP);
+                appDiscountAmount = totalAmount.subtract(grossFromFinal).max(BigDecimal.ZERO);
             }
+
+            // finalAmount = (totalAmount - discountRaw) × (1 - rate)
+            finalAmount = totalAmount
+                    .subtract(appDiscountAmount)
+                    .multiply(BigDecimal.ONE.subtract(platformRate))
+                    .setScale(2, RoundingMode.HALF_UP);
+
+            // ── Recalculate finalUnitPrice và addonAmount net cho từng item ──
+            // Phân bổ discount theo tỷ lệ basePrice × qty trong totalAmount
+            BigDecimal totalBaseOnly = calcs.stream()
+                    .map(c -> c.basePrice().multiply(BigDecimal.valueOf(c.quantity())))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+            // Discount chỉ áp dụng lên phần basePrice (không áp lên addon)
+            BigDecimal discountForBase = appDiscountAmount.min(totalBaseOnly);
+
+            List<CalcItem> rebuiltCalcs = new ArrayList<>();
+            for (CalcItem calc : calcs) {
+                BigDecimal itemBaseTotal2 = calc.basePrice().multiply(BigDecimal.valueOf(calc.quantity()));
+
+                // Phân bổ discount cho item này theo tỷ lệ basePrice
+                BigDecimal itemDiscount = totalBaseOnly.compareTo(BigDecimal.ZERO) > 0
+                        ? discountForBase
+                        .multiply(itemBaseTotal2)
+                        .divide(totalBaseOnly, 10, RoundingMode.HALF_UP)
+                        : BigDecimal.ZERO;
+
+                BigDecimal discountPerUnit = BigDecimal.valueOf(calc.quantity()) .compareTo(BigDecimal.ZERO) > 0
+                        ? itemDiscount.divide(BigDecimal.valueOf(calc.quantity()), 10, RoundingMode.HALF_UP)
+                        : BigDecimal.ZERO;
+
+                // finalUnitPrice = (basePrice - discount/qty) × (1 - rate)
+                BigDecimal newFinalUnitPrice = calc.basePrice()
+                        .subtract(discountPerUnit)
+                        .multiply(BigDecimal.ONE.subtract(platformRate))
+                        .setScale(2, RoundingMode.HALF_UP);
+
+                // addonAmount net = addonRaw × (1 - rate)
+                BigDecimal newAddonNet = calc.addonRaw()
+                        .multiply(BigDecimal.ONE.subtract(platformRate))
+                        .setScale(2, RoundingMode.HALF_UP);
+
+                BigDecimal newSubtotal = newFinalUnitPrice
+                        .multiply(BigDecimal.valueOf(calc.quantity()))
+                        .add(newAddonNet);
+
+                rebuiltCalcs.add(new CalcItem(
+                        calc.product(),
+                        calc.basePrice(),       // basePrice = raw (giá user nhập)
+                        calc.discountPercent(),
+                        newFinalUnitPrice,      // net sau discount & rate
+                        calc.quantity(),
+                        newSubtotal,
+                        calc.vatPercent(),
+                        calc.vatAmount(),
+                        newAddonNet,            // addon net
+                        calc.addonRaw(),
+                        calc.variantSelections(),
+                        calc.note(),
+                        calc.categoryName()
+                ));
+            }
+            calcs = rebuiltCalcs;
+
+        } else {
+            // ==================== OFFLINE: giá như cũ ====================
+            for (CalcItem calc : calcs) {
+                BigDecimal finalUnitPrice = roundToThousand(
+                        calc.basePrice().multiply(BigDecimal.ONE.subtract(
+                                BigDecimal.valueOf(calc.discountPercent())
+                                        .divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP))));
+                BigDecimal newSubtotal = finalUnitPrice
+                        .multiply(BigDecimal.valueOf(calc.quantity()))
+                        .add(calc.addonRaw());
+                finalAmount = finalAmount.add(newSubtotal);
+            }
+            // Rebuild calcs với finalUnitPrice đúng cho offline
+            List<CalcItem> rebuiltOffline = new ArrayList<>();
+            for (CalcItem calc : calcs) {
+                BigDecimal finalUnitPrice = roundToThousand(
+                        calc.basePrice().multiply(BigDecimal.ONE.subtract(
+                                BigDecimal.valueOf(calc.discountPercent())
+                                        .divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP))));
+                BigDecimal newSubtotal = finalUnitPrice
+                        .multiply(BigDecimal.valueOf(calc.quantity()))
+                        .add(calc.addonRaw());
+                rebuiltOffline.add(new CalcItem(
+                        calc.product(), calc.basePrice(), calc.discountPercent(),
+                        finalUnitPrice, calc.quantity(), newSubtotal,
+                        calc.vatPercent(), calc.vatAmount(), calc.addonRaw(), calc.addonRaw(),
+                        calc.variantSelections(), calc.note(), calc.categoryName()));
+            }
+            calcs = rebuiltOffline;
         }
 
         // ==================== CUSTOMER DISCOUNT ====================
@@ -802,25 +899,20 @@ public class PosService {
 
         if (req.getCustomerDiscountId() != null) {
             PosCustomerDiscount customerDiscount = customerDiscountRepo
-                    .findById(req.getCustomerDiscountId())
-                    .orElse(null);
-
+                    .findById(req.getCustomerDiscountId()).orElse(null);
             if (customerDiscount != null) {
                 BigDecimal selectedItemPrice = null;
                 if (customerDiscount.getSelectedOption() != null
                         && customerDiscount.getSelectedOption().isItemType()
                         && req.getDiscountItemProductId() != null) {
-
                     selectedItemPrice = calcs.stream()
                             .filter(c -> c.product().getId().equals(req.getDiscountItemProductId()))
                             .findFirst()
                             .map(c -> c.finalUnitPrice().multiply(BigDecimal.valueOf(c.quantity())))
                             .orElse(BigDecimal.ZERO);
                 }
-
                 PosDiscountService.DiscountResult dr =
                         posDiscountService.calculate(customerDiscount, finalAmount, selectedItemPrice);
-
                 customerDiscountAmt = dr.discountAmount();
                 discountNote = dr.note();
             }
@@ -840,10 +932,10 @@ public class PosService {
                 .orderSource(req.getOrderSource())
                 .status(PosOrderStatus.COMPLETED)
                 .note(req.getNote())
-                .totalAmount(totalAmount)
-                .discountAmount(appDiscountAmount.add(customerDiscountAmt))
+                .totalAmount(totalAmount)                                   // raw
+                .discountAmount(appDiscountAmount.add(customerDiscountAmt)) // raw discount
                 .discountNote(discountNote)
-                .finalAmount(finalAmount)
+                .finalAmount(finalAmount)                                   // net sau rate
                 .customerPhone(req.getCustomerPhone())
                 .customerName(req.getCustomerName())
                 .paymentMethod(req.getPaymentMethod())
@@ -856,9 +948,7 @@ public class PosService {
         // Commit customer discount
         if (req.getCustomerDiscountId() != null) {
             PosCustomerDiscount cd = customerDiscountRepo.findById(req.getCustomerDiscountId()).orElse(null);
-            if (cd != null) {
-                posDiscountService.commitDiscount(cd, customerDiscountAmt);
-            }
+            if (cd != null) posDiscountService.commitDiscount(cd, customerDiscountAmt);
         }
 
         // Cập nhật tổng chi tiêu khách hàng
@@ -881,64 +971,49 @@ public class PosService {
                     .categoryName(calc.categoryName())
                     .discountPercent(calc.discountPercent())
                     .quantity(calc.quantity())
-                    .basePrice(calc.basePrice())
-                    .finalUnitPrice(calc.finalUnitPrice())
-                    .subtotal(calc.subtotal())
+                    .basePrice(calc.basePrice())           // raw (giá user nhập)
+                    .finalUnitPrice(calc.finalUnitPrice()) // net (sau discount & rate)
+                    .subtotal(calc.subtotal())             // net
                     .vatPercent(calc.vatPercent())
                     .vatAmount(calc.vatAmount())
-                    .addonAmount(calc.addonAmount())
+                    .addonAmount(calc.addonAmount())       // net
                     .note(calc.note())
                     .build();
 
             orderItem = orderItemRepo.save(orderItem);
 
+            // ... phần lưu ingredients giữ nguyên không thay đổi ...
             if (calc.variantSelections() != null && !calc.variantSelections().isEmpty()) {
                 List<PosOrderItemIngredient> ingList = new ArrayList<>();
-
                 for (var sel : calc.variantSelections()) {
                     PosVariant variant = variantRepo.findById(sel.getVariantId()).orElseThrow();
                     Map<Long, PosVariantIngredient> viMap = variantIngredientRepo.findByVariant(variant)
                             .stream().collect(Collectors.toMap(
                                     vi -> vi.getIngredient().getId(), vi -> vi));
-
                     for (var s : sel.getSelectedIngredients()) {
                         PosIngredient ing = ingredientRepo.findById(s.getIngredientId()).orElseThrow();
                         PosVariantIngredient vi = viMap.get(ing.getId());
-
                         BigDecimal defaultDeductPerUnit = (vi != null && vi.getStockDeductPerUnit() != null)
-                                ? vi.getStockDeductPerUnit()
-                                : BigDecimal.ONE;
-
+                                ? vi.getStockDeductPerUnit() : BigDecimal.ONE;
                         List<BigDecimal> unitWeights = s.getUnitWeights();
-
                         if (unitWeights != null && !unitWeights.isEmpty()) {
                             int expectedUnits = s.getSelectedCount() * calc.quantity();
-                            if (unitWeights.size() != expectedUnits) {
+                            if (unitWeights.size() != expectedUnits)
                                 throw new IllegalArgumentException(String.format(
-                                        "Nguyên liệu '%s': unitWeights phải có đúng %d phần tử " +
-                                                "(selectedCount=%d × quantity=%d, hiện có %d)",
-                                        ing.getName(), expectedUnits, s.getSelectedCount(),
-                                        calc.quantity(), unitWeights.size()));
-                            }
+                                        "Nguyên liệu '%s': unitWeights phải có đúng %d phần tử",
+                                        ing.getName(), expectedUnits));
                             for (int i = 0; i < unitWeights.size(); i++) {
                                 BigDecimal w = unitWeights.get(i);
-                                if (w == null || w.compareTo(BigDecimal.ZERO) <= 0) {
+                                if (w == null || w.compareTo(BigDecimal.ZERO) <= 0)
                                     throw new IllegalArgumentException(String.format(
-                                            "Nguyên liệu '%s': unitWeight[%d] phải > 0 (giá trị: %s)",
-                                            ing.getName(), i, w));
-                                }
+                                            "Nguyên liệu '%s': unitWeight[%d] phải > 0", ing.getName(), i));
                             }
                         }
-
-                        BigDecimal quantityUsed;
-                        if (unitWeights != null && !unitWeights.isEmpty()) {
-                            quantityUsed = unitWeights.stream()
-                                    .reduce(BigDecimal.ZERO, BigDecimal::add);
-                        } else {
-                            quantityUsed = defaultDeductPerUnit
-                                    .multiply(BigDecimal.valueOf(s.getSelectedCount()))
-                                    .multiply(BigDecimal.valueOf(calc.quantity()));
-                        }
+                        BigDecimal quantityUsed = (unitWeights != null && !unitWeights.isEmpty())
+                                ? unitWeights.stream().reduce(BigDecimal.ZERO, BigDecimal::add)
+                                : defaultDeductPerUnit
+                                .multiply(BigDecimal.valueOf(s.getSelectedCount()))
+                                .multiply(BigDecimal.valueOf(calc.quantity()));
 
                         ingList.add(PosOrderItemIngredient.builder()
                                 .orderItem(orderItem)
@@ -958,8 +1033,8 @@ public class PosService {
             }
         }
 
-        log.info("[POS] Order created: {} | isApp={} | total={} | appDiscount={} | customerDiscount={} | final={}",
-                orderCode, isAppOrder, totalAmount, appDiscountAmount, customerDiscountAmt, finalAmount);
+        log.info("[POS] Order created: {} | isApp={} | total={} | appDiscount={} | customerDiscount={} | final={} | rate={}",
+                orderCode, isAppOrder, totalAmount, appDiscountAmount, customerDiscountAmt, finalAmount, platformRate);
 
         return toOrderResponse(orderRepo.findById(order.getId()).orElseThrow());
     }

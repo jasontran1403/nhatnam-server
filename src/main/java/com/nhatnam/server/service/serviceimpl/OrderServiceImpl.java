@@ -424,7 +424,8 @@ public class OrderServiceImpl implements OrderService {
         int vatRatePct = product.getVatRate() != null
                 ? product.getVatRate().getPercentage() : 0;
 
-        String unit = product.getUnit();
+        String unit = product.getProductIngredients().get(0).getIngredient().getUnit();
+
         if (unit == null || unit.isBlank()) unit = "kg";
 
         OrderItem item = OrderItem.builder()
