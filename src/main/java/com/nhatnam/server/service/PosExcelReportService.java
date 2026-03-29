@@ -322,8 +322,15 @@ public class PosExcelReportService {
         setBorder(footStyle);
         mergeCells(ws, ROW, 0, ROW, 10, "Tổng sản phẩm", footStyle);
 
-        BigDecimal totalSoldAll = salesMap.values().stream()
-                .map(a -> a[0].add(a[1]).add(a[2]).add(a[3]).add(a[4]).add(a[5]).add(a[6]))
+        Set<Long> mainIngIds = mainIngs.stream()
+                .map(PosIngredient::getId)
+                .collect(Collectors.toSet());
+
+        BigDecimal totalSoldAll = salesMap.entrySet().stream()
+                .filter(e -> mainIngIds.contains(e.getKey()))
+                .map(e -> e.getValue()[0].add(e.getValue()[1]).add(e.getValue()[2])
+                        .add(e.getValue()[3]).add(e.getValue()[4]).add(e.getValue()[5])
+                        .add(e.getValue()[6]))
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
         Cell footCell = foot.createCell(11);
