@@ -21,7 +21,7 @@ import java.util.Map;
 public class InvoicePdf {
 
     private static final String TEMPLATE_PATH = "pdf.html";
-    private static final String VIETQR_URL = "https://img.vietqr.io/image/ACB-16198757-qr_only.jpg";
+    private static final String VIETQR_URL = "https://img.vietqr.io/image/TCB-67877777777777-qr_only.jpg";
 
     public byte[] GenerateInvoicePdf(InvoiceDTO invoiceDTO) throws IOException {
         InputStream inputStream = InvoicePdf.class.getClassLoader().getResourceAsStream(TEMPLATE_PATH);

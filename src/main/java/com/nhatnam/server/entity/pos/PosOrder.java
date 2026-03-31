@@ -1,4 +1,4 @@
-// entity/pos/PosOrder.java — thêm customer snapshot + discount fields
+// entity/pos/PosOrder.java
 package com.nhatnam.server.entity.pos;
 
 import com.nhatnam.server.entity.User;
@@ -39,19 +39,30 @@ public class PosOrder {
     @Column(nullable = false)
     private PosOrderStatus status;
 
+    // ── Amounts ───────────────────────────────────────────────────
+    // totalAmount  = tổng giá gốc RAW (trước discount, trước rate)
+    // discountAmount = KM raw (trước rate)
+    // finalAmount  = (totalAmount - discountAmount) × (1 - platformRate)  [net quán nhận]
+
     @Column(name = "total_amount", nullable = false, precision = 10, scale = 2)
     private BigDecimal totalAmount;
 
-    // ── Discount snapshot ─────────────────────────────────────────
     @Column(precision = 12, scale = 2) @Builder.Default
     private BigDecimal discountAmount = BigDecimal.ZERO;
 
     @Column(length = 200)
     private String discountNote;
 
-    // ── Tổng sau giảm ─────────────────────────────────────────────
     @Column(name = "final_amount", nullable = false, precision = 10, scale = 2)
     private BigDecimal finalAmount;
+
+    // ── Platform fee snapshot ────────────────────────────────────
+    // Snapshot tại thời điểm tạo đơn để tránh thay đổi rate sau này
+    @Column(name = "platform_rate", precision = 6, scale = 4) @Builder.Default
+    private BigDecimal platformRate = BigDecimal.ZERO;        // vd: 0.3305
+
+    @Column(name = "platform_fee_amount", precision = 12, scale = 2) @Builder.Default
+    private BigDecimal platformFeeAmount = BigDecimal.ZERO;   // = (totalAmount - discountAmount) × platformRate
 
     // ── Customer snapshot ─────────────────────────────────────────
     @Column(name = "customer_phone", length = 20)

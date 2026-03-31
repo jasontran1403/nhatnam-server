@@ -592,12 +592,6 @@ public class PosService {
                 .collect(Collectors.toList());
     }
 
-    // ════════════════════════════════════════
-    // ORDER — dùng storeId để lấy ca
-    // ════════════════════════════════════════
-    // ════════════════════════════════════════════════════════════════
-    // createOrder — FIXED APP ORDER PRICING
-    // ════════════════════════════════════════════════════════════════
     @Transactional
     public PosOrderResponse createOrder(CreatePosOrderRequest req, Long userId, Long storeId) {
         PosShift shift = shiftRepo.findOpenShiftByStoreId(storeId, userId, ShiftStatus.OPEN)
@@ -768,7 +762,6 @@ public class PosService {
             }
 
             // Tạm thời thêm vào calcs với finalUnitPrice = basePrice (sẽ recalc sau)
-            // addonAmount tạm = addonRawTotal (sẽ recalc sau nếu app)
             calcs.add(new CalcItem(
                     product, basePrice, discountPercent,
                     basePrice,          // finalUnitPrice placeholder
@@ -793,8 +786,6 @@ public class PosService {
             } else if (req.getAppFinalAmount() != null
                     && req.getAppFinalAmount().compareTo(BigDecimal.ZERO) > 0) {
                 // user nhập giá net cuối → tính ngược ra discount raw
-                // appFinalAmount = (totalAmount - discountRaw) × (1-rate)
-                // → discountRaw = totalAmount - appFinalAmount / (1-rate)
                 BigDecimal grossFromFinal = req.getAppFinalAmount()
                         .divide(BigDecimal.ONE.subtract(platformRate), 10, RoundingMode.HALF_UP);
                 appDiscountAmount = totalAmount.subtract(grossFromFinal).max(BigDecimal.ZERO);
@@ -807,18 +798,15 @@ public class PosService {
                     .setScale(2, RoundingMode.HALF_UP);
 
             // ── Recalculate finalUnitPrice và addonAmount net cho từng item ──
-            // Phân bổ discount theo tỷ lệ basePrice × qty trong totalAmount
             BigDecimal totalBaseOnly = calcs.stream()
                     .map(c -> c.basePrice().multiply(BigDecimal.valueOf(c.quantity())))
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
-            // Discount chỉ áp dụng lên phần basePrice (không áp lên addon)
             BigDecimal discountForBase = appDiscountAmount.min(totalBaseOnly);
 
             List<CalcItem> rebuiltCalcs = new ArrayList<>();
             for (CalcItem calc : calcs) {
                 BigDecimal itemBaseTotal2 = calc.basePrice().multiply(BigDecimal.valueOf(calc.quantity()));
 
-                // Phân bổ discount cho item này theo tỷ lệ basePrice
                 BigDecimal itemDiscount = totalBaseOnly.compareTo(BigDecimal.ZERO) > 0
                         ? discountForBase
                         .multiply(itemBaseTotal2)
@@ -829,13 +817,11 @@ public class PosService {
                         ? itemDiscount.divide(BigDecimal.valueOf(calc.quantity()), 10, RoundingMode.HALF_UP)
                         : BigDecimal.ZERO;
 
-                // finalUnitPrice = (basePrice - discount/qty) × (1 - rate)
                 BigDecimal newFinalUnitPrice = calc.basePrice()
                         .subtract(discountPerUnit)
                         .multiply(BigDecimal.ONE.subtract(platformRate))
                         .setScale(2, RoundingMode.HALF_UP);
 
-                // addonAmount net = addonRaw × (1 - rate)
                 BigDecimal newAddonNet = calc.addonRaw()
                         .multiply(BigDecimal.ONE.subtract(platformRate))
                         .setScale(2, RoundingMode.HALF_UP);
@@ -846,14 +832,14 @@ public class PosService {
 
                 rebuiltCalcs.add(new CalcItem(
                         calc.product(),
-                        calc.basePrice(),       // basePrice = raw (giá user nhập)
+                        calc.basePrice(),
                         calc.discountPercent(),
-                        newFinalUnitPrice,      // net sau discount & rate
+                        newFinalUnitPrice,
                         calc.quantity(),
                         newSubtotal,
                         calc.vatPercent(),
                         calc.vatAmount(),
-                        newAddonNet,            // addon net
+                        newAddonNet,
                         calc.addonRaw(),
                         calc.variantSelections(),
                         calc.note(),
@@ -900,29 +886,49 @@ public class PosService {
         if (req.getCustomerDiscountId() != null) {
             PosCustomerDiscount customerDiscount = customerDiscountRepo
                     .findById(req.getCustomerDiscountId()).orElse(null);
+
             if (customerDiscount != null) {
                 BigDecimal selectedItemPrice = null;
                 if (customerDiscount.getSelectedOption() != null
                         && customerDiscount.getSelectedOption().isItemType()
                         && req.getDiscountItemProductId() != null) {
+
                     selectedItemPrice = calcs.stream()
                             .filter(c -> c.product().getId().equals(req.getDiscountItemProductId()))
                             .findFirst()
                             .map(c -> c.finalUnitPrice().multiply(BigDecimal.valueOf(c.quantity())))
                             .orElse(BigDecimal.ZERO);
                 }
+
                 PosDiscountService.DiscountResult dr =
                         posDiscountService.calculate(customerDiscount, finalAmount, selectedItemPrice);
+
                 customerDiscountAmt = dr.discountAmount();
                 discountNote = dr.note();
             }
         }
 
-        finalAmount = finalAmount.subtract(customerDiscountAmt).max(BigDecimal.ZERO);
+        finalAmount = finalAmount
+                .subtract(customerDiscountAmt)
+                .max(BigDecimal.ZERO);
 
         // ==================== TẠO ORDER ====================
         PosStore store = posStoreRepo.findById(storeId)
                 .orElseThrow(() -> new RuntimeException("Store not found: " + storeId));
+
+        BigDecimal grossAmount = totalAmount.subtract(appDiscountAmount); // (total - discount) raw
+        BigDecimal platformFeeAmountSnapshot = isAppOrder
+                ? grossAmount.multiply(platformRate).setScale(2, RoundingMode.HALF_UP)
+                : BigDecimal.ZERO;
+
+        BigDecimal totalDiscountAmount = appDiscountAmount.add(customerDiscountAmt);
+
+        if (req.getOrderSource() == OrderSource.TAKE_AWAY
+                || req.getOrderSource() == OrderSource.DINE_IN
+                || req.getOrderSource() == OrderSource.OFFLINE) {
+
+            totalDiscountAmount = totalAmount.subtract(finalAmount);
+        }
 
         PosOrder order = PosOrder.builder()
                 .orderCode(orderCode)
@@ -933,9 +939,13 @@ public class PosService {
                 .status(PosOrderStatus.COMPLETED)
                 .note(req.getNote())
                 .totalAmount(totalAmount)                                   // raw
-                .discountAmount(appDiscountAmount.add(customerDiscountAmt)) // raw discount
+                .discountAmount(totalDiscountAmount) // raw discount
                 .discountNote(discountNote)
                 .finalAmount(finalAmount)                                   // net sau rate
+                // ── Snapshot platform fee ───────────────────────────────
+                .platformRate(platformRate)                                 // 0.3305
+                .platformFeeAmount(platformFeeAmountSnapshot)              // (total-discount)×rate
+                // ───────────────────────────────────────────────────────
                 .customerPhone(req.getCustomerPhone())
                 .customerName(req.getCustomerName())
                 .paymentMethod(req.getPaymentMethod())
@@ -971,18 +981,18 @@ public class PosService {
                     .categoryName(calc.categoryName())
                     .discountPercent(calc.discountPercent())
                     .quantity(calc.quantity())
-                    .basePrice(calc.basePrice())           // raw (giá user nhập)
-                    .finalUnitPrice(calc.finalUnitPrice()) // net (sau discount & rate)
-                    .subtotal(calc.subtotal())             // net
+                    .basePrice(calc.basePrice())
+                    .finalUnitPrice(calc.finalUnitPrice())
+                    .subtotal(calc.subtotal())
                     .vatPercent(calc.vatPercent())
                     .vatAmount(calc.vatAmount())
-                    .addonAmount(calc.addonAmount())       // net
+                    .addonAmount(calc.addonAmount())
                     .note(calc.note())
                     .build();
 
             orderItem = orderItemRepo.save(orderItem);
 
-            // ... phần lưu ingredients giữ nguyên không thay đổi ...
+            // ... phần lưu ingredients giữ nguyên ...
             if (calc.variantSelections() != null && !calc.variantSelections().isEmpty()) {
                 List<PosOrderItemIngredient> ingList = new ArrayList<>();
                 for (var sel : calc.variantSelections()) {
@@ -996,19 +1006,6 @@ public class PosService {
                         BigDecimal defaultDeductPerUnit = (vi != null && vi.getStockDeductPerUnit() != null)
                                 ? vi.getStockDeductPerUnit() : BigDecimal.ONE;
                         List<BigDecimal> unitWeights = s.getUnitWeights();
-                        if (unitWeights != null && !unitWeights.isEmpty()) {
-                            int expectedUnits = s.getSelectedCount() * calc.quantity();
-                            if (unitWeights.size() != expectedUnits)
-                                throw new IllegalArgumentException(String.format(
-                                        "Nguyên liệu '%s': unitWeights phải có đúng %d phần tử",
-                                        ing.getName(), expectedUnits));
-                            for (int i = 0; i < unitWeights.size(); i++) {
-                                BigDecimal w = unitWeights.get(i);
-                                if (w == null || w.compareTo(BigDecimal.ZERO) <= 0)
-                                    throw new IllegalArgumentException(String.format(
-                                            "Nguyên liệu '%s': unitWeight[%d] phải > 0", ing.getName(), i));
-                            }
-                        }
                         BigDecimal quantityUsed = (unitWeights != null && !unitWeights.isEmpty())
                                 ? unitWeights.stream().reduce(BigDecimal.ZERO, BigDecimal::add)
                                 : defaultDeductPerUnit
@@ -1503,7 +1500,8 @@ public class PosService {
                 .createdAt(o.getCreatedAt())
                 .updatedAt(o.getUpdatedAt())
                 .items(items)
-                .platformFee(platformFee)
+                .platformFee(o.getPlatformFeeAmount())
+                .platformRate(o.getPlatformRate())
                 .netRevenue(netRevenue)
                 .build();
     }

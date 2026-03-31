@@ -29,6 +29,7 @@ public class FileStorageServiceImpl implements FileStorageService {
     private static final String VARIANT_IMAGE_PATH       = BASE_STORAGE_PATH + "/variant";
     private static final String INGREDIENT_IMAGE_PATH    = BASE_STORAGE_PATH + "/ingredient";
     private static final String SELLER_IMPORT_IMAGE_PATH = BASE_STORAGE_PATH + "/seller-import"; // ← THÊM
+    private static final String SHIFT_IMAGE_PATH = BASE_STORAGE_PATH + "/shift-images";
 
     private static final List<String> ALLOWED_EXTENSIONS = Arrays.asList(
             "jpg", "jpeg", "png", "gif", "bmp", "webp", "tiff", "tif"
@@ -46,6 +47,7 @@ public class FileStorageServiceImpl implements FileStorageService {
             Files.createDirectories(Paths.get(VARIANT_IMAGE_PATH));
             Files.createDirectories(Paths.get(INGREDIENT_IMAGE_PATH));
             Files.createDirectories(Paths.get(SELLER_IMPORT_IMAGE_PATH)); // ← THÊM
+            Files.createDirectories(Paths.get(SHIFT_IMAGE_PATH));
             log.info("✅ Storage directories initialized at: {}", BASE_STORAGE_PATH);
         } catch (IOException e) {
             throw new RuntimeException("Could not create storage directories", e);
@@ -115,6 +117,41 @@ public class FileStorageServiceImpl implements FileStorageService {
                 file.getSize() / 1024);
 
         return "/images/seller-import/" + filename;
+    }
+
+    @Override
+    public String saveShiftImage(byte[] imageBytes, String filename) throws IOException {
+        if (imageBytes == null || imageBytes.length == 0)
+            throw new IllegalArgumentException("Image bytes is empty");
+
+        Files.createDirectories(Paths.get(SHIFT_IMAGE_PATH));
+
+        // Đọc ảnh, resize giữ tỉ lệ xuống max 1920px (đủ để OCR đọc chữ)
+        BufferedImage original;
+        try (var in = new java.io.ByteArrayInputStream(imageBytes)) {
+            original = ImageIO.read(in);
+        }
+        if (original == null)
+            throw new IOException("Cannot read image bytes as image");
+
+        BufferedImage resized = resizeKeepRatio(original, 1920);
+
+        // Đảm bảo filename kết thúc bằng .png
+        String safeFilename = filename.endsWith(".png")
+                ? filename
+                : filename.replaceAll("\\.[^.]+$", "") + ".png";
+
+        Path target = Paths.get(SHIFT_IMAGE_PATH, safeFilename);
+        if (!ImageIO.write(resized, "png", target.toFile()))
+            throw new IOException("Failed to write shift image: " + safeFilename);
+
+        log.info("✅ [shift-images] saved → {} | original={}×{} resized={}×{} ({}KB)",
+                safeFilename,
+                original.getWidth(), original.getHeight(),
+                resized.getWidth(), resized.getHeight(),
+                imageBytes.length / 1024);
+
+        return "/images/shift-images/" + safeFilename;
     }
 
     // ════════════════════════════════════════
@@ -262,7 +299,8 @@ public class FileStorageServiceImpl implements FileStorageService {
             case "category"      -> Paths.get(CATEGORY_IMAGE_PATH,      filename);
             case "variant"       -> Paths.get(VARIANT_IMAGE_PATH,       filename);
             case "ingredient"    -> Paths.get(INGREDIENT_IMAGE_PATH,    filename);
-            case "seller-import" -> Paths.get(SELLER_IMPORT_IMAGE_PATH, filename); // ← THÊM
+            case "seller-import" -> Paths.get(SELLER_IMPORT_IMAGE_PATH, filename);
+            case "shift-images" -> Paths.get(SHIFT_IMAGE_PATH, filename);
             default              -> null;
         };
     }

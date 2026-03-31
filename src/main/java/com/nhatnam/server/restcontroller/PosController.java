@@ -9,10 +9,7 @@ import com.nhatnam.server.entity.pos.*;
 import com.nhatnam.server.enumtype.ShiftStatus;
 import com.nhatnam.server.enumtype.StatusCode;
 import com.nhatnam.server.repository.pos.*;
-import com.nhatnam.server.service.PosCustomerService;
-import com.nhatnam.server.service.PosExcelReportService;
-import com.nhatnam.server.service.PosService;
-import com.nhatnam.server.service.PosDiscountService;
+import com.nhatnam.server.service.*;
 import com.nhatnam.server.utils.PosReportAsyncService;
 import com.nhatnam.server.utils.TelegramService;
 import jakarta.validation.Valid;
@@ -47,8 +44,48 @@ public class PosController {
     private final PosDiscountProgramRepository  programRepo;    // ← THÊM
     private final PosCustomerService posCustomerService;
     private final PosCustomerRepository posCustomerRepo;
+    private final ShiftImageService shiftImageService;
 
     private static final String DELETE_ORDER_PASSCODE = "160625";
+
+    @PostMapping(value = "/shifts/image/open", consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiResponse<ShiftOcrResponse>> uploadOpenShiftImage(
+            @RequestParam("file") org.springframework.web.multipart.MultipartFile file,
+            @RequestParam(value = "shiftId", required = false) Long shiftId,
+            Authentication auth) {
+        try {
+            Long userId  = extractUserId(auth);
+            Long storeId = extractStoreId(userId);
+            ShiftOcrResponse result = shiftImageService.processShiftImage(
+                    file, "OPEN", shiftId, storeId);
+            return ResponseEntity.ok(ApiResponse.success(result, "OCR hoàn thành"));
+        } catch (Exception e) {
+            log.error("[POS] uploadOpenShiftImage error", e);
+            return ResponseEntity.ok(ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
+        }
+    }
+
+    /**
+     * Upload ảnh kiểm kho KHI ĐÓNG CA (đã có shift_id).
+     * POST /api/pos/shifts/image/close
+     * Form-data: file (image), shiftId (required)
+     */
+    @PostMapping(value = "/shifts/image/close", consumes = org.springframework.http.MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiResponse<ShiftOcrResponse>> uploadCloseShiftImage(
+            @RequestParam("file") org.springframework.web.multipart.MultipartFile file,
+            @RequestParam("shiftId") Long shiftId,
+            Authentication auth) {
+        try {
+            Long userId  = extractUserId(auth);
+            Long storeId = extractStoreId(userId);
+            ShiftOcrResponse result = shiftImageService.processShiftImage(
+                    file, "CLOSE", shiftId, storeId);
+            return ResponseEntity.ok(ApiResponse.success(result, "OCR hoàn thành"));
+        } catch (Exception e) {
+            log.error("[POS] uploadCloseShiftImage error", e);
+            return ResponseEntity.ok(ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
+        }
+    }
 
     @GetMapping("/customers/search")
     public ResponseEntity<ApiResponse<List<Map<String, Object>>>> searchCustomers(
@@ -775,7 +812,6 @@ public class PosController {
     public ResponseEntity<ApiResponse<PosOrderResponse>> createOrder(
             @Valid @RequestBody CreatePosOrderRequest req, Authentication auth) {
         try {
-            System.out.println(req);
             Long userId  = extractUserId(auth);
             Long storeId = extractStoreId(userId);
             PosOrderResponse order = posService.createOrder(req, userId, storeId);
