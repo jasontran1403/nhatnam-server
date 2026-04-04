@@ -6,6 +6,7 @@ import com.nhatnam.server.dto.InvoiceDTO;
 import com.nhatnam.server.dto.request.*;
 import com.nhatnam.server.dto.response.*;
 import com.nhatnam.server.entity.Customer;
+import com.nhatnam.server.entity.InventoryBatch;
 import com.nhatnam.server.entity.InventoryLog;
 import com.nhatnam.server.enumtype.InventoryAction;
 import com.nhatnam.server.enumtype.StatusCode;
@@ -14,6 +15,7 @@ import com.nhatnam.server.exception.PriceChangedException;
 import com.nhatnam.server.repository.CustomerRepository;
 import com.nhatnam.server.repository.InventoryLogRepository;
 import com.nhatnam.server.service.*;
+import com.nhatnam.server.service.serviceimpl.InventoryBatchService;
 import com.nhatnam.server.utils.InvoicePdf;
 import com.nhatnam.server.utils.TelegramService;
 import jakarta.validation.Valid;
@@ -53,6 +55,148 @@ public class SellerController {
     private final ManualImportService manualImportService;
     private final ObjectMapper objectMapper;
     private final CustomerRepository customerRepository;
+    private final InventoryBatchService inventoryBatchService;
+
+    @GetMapping("/inventory-batches")
+    public ResponseEntity<ApiResponse<Page<InventoryBatchSummaryResponse>>> listBatches(
+            @RequestParam(required = false) String action,
+            @RequestParam(defaultValue = "0")  int page,
+            @RequestParam(defaultValue = "20") int size) {
+
+        return ResponseEntity.ok(ApiResponse.success(
+                inventoryBatchService.listBatches(action, page, size), "OK"));
+    }
+
+    /**
+     * GET /api/seller/inventory-batches/{id}
+     */
+    @GetMapping("/inventory-batches/{id}")
+    public ResponseEntity<ApiResponse<InventoryBatchDetailResponse>> getBatchDetail(
+            @PathVariable Long id) {
+
+        try {
+            return ResponseEntity.ok(ApiResponse.success(
+                    inventoryBatchService.getBatchDetail(id), "OK"));
+        } catch (RuntimeException e) {
+            return ResponseEntity.ok(
+                    ApiResponse.error(StatusCode.NOT_FOUND, e.getMessage()));
+        }
+    }
+
+    /**
+     * POST /api/seller/inventory-batches/import  (multipart/form-data)
+     * Part "data": JSON ManualImportRequest
+     * Part "image": ảnh phiếu (optional)
+     */
+    @PostMapping(
+            value    = "/inventory-batches/import",
+            consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ResponseEntity<ApiResponse<BatchCreateResponse>> importBatch(
+            @RequestPart("data") String dataJson,
+            @RequestPart(value = "image", required = false) MultipartFile receiptImage,
+            Authentication auth) {
+
+        try {
+            User actor = (User) auth.getPrincipal();
+            ManualImportRequest req =
+                    objectMapper.readValue(dataJson, ManualImportRequest.class);
+
+            String imageUrl = null;
+            if (receiptImage != null && !receiptImage.isEmpty()) {
+                imageUrl = fileStorageService.saveSellerImportReceiptImage(receiptImage);
+            }
+
+            InventoryBatch batch =
+                    inventoryBatchService.createImportBatch(req, actor, imageUrl);
+
+            log.info("[SELLER] IMPORT {} — {} items by {}",
+                    batch.getBatchCode(),
+                    batch.getLogs().size(),
+                    actor.getUsername());
+
+            return ResponseEntity.ok(ApiResponse.success(
+                    toBatchCreateResp(batch),
+                    "Nhập kho thành công. Batch: " + batch.getBatchCode()));
+
+        } catch (RuntimeException e) {
+            log.error("[SELLER] importBatch: {}", e.getMessage());
+            return ResponseEntity.ok(
+                    ApiResponse.error(StatusCode.BAD_REQUEST, e.getMessage()));
+        } catch (Exception e) {
+            log.error("[SELLER] importBatch unexpected", e);
+            return ResponseEntity.ok(
+                    ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
+        }
+    }
+
+    /**
+     * POST /api/seller/inventory-batches/export
+     * Body: ManualExportRequest JSON
+     */
+    @PostMapping("/inventory-batches/export")
+    public ResponseEntity<ApiResponse<BatchCreateResponse>> exportBatch(
+            @RequestBody ManualExportRequest req,
+            Authentication auth) {
+
+        try {
+            User actor = (User) auth.getPrincipal();
+            InventoryBatch batch = inventoryBatchService.createExportBatch(req, actor);
+
+            log.info("[SELLER] EXPORT {} — {} items by {}",
+                    batch.getBatchCode(),
+                    batch.getLogs().size(),
+                    actor.getUsername());
+
+            return ResponseEntity.ok(ApiResponse.success(
+                    toBatchCreateResp(batch),
+                    "Xuất kho thành công. Batch: " + batch.getBatchCode()));
+
+        } catch (RuntimeException e) {
+            log.error("[SELLER] exportBatch: {}", e.getMessage());
+            return ResponseEntity.ok(
+                    ApiResponse.error(StatusCode.BAD_REQUEST, e.getMessage()));
+        }
+    }
+
+    /**
+     * POST /api/seller/inventory-batches/check
+     * Body: StockCheckRequest JSON
+     */
+    @PostMapping("/inventory-batches/check")
+    public ResponseEntity<ApiResponse<BatchCreateResponse>> checkBatch(
+            @RequestBody StockCheckRequest req,
+            Authentication auth) {
+
+        try {
+            User actor = (User) auth.getPrincipal();
+            InventoryBatch batch = inventoryBatchService.createAdjustBatch(req, actor);
+
+            log.info("[SELLER] ADJUST {} — {} items by {}",
+                    batch.getBatchCode(),
+                    batch.getLogs().size(),
+                    actor.getUsername());
+
+            return ResponseEntity.ok(ApiResponse.success(
+                    toBatchCreateResp(batch),
+                    "Kiểm kho thành công. Batch: " + batch.getBatchCode()));
+
+        } catch (RuntimeException e) {
+            log.error("[SELLER] checkBatch: {}", e.getMessage());
+            return ResponseEntity.ok(
+                    ApiResponse.error(StatusCode.BAD_REQUEST, e.getMessage()));
+        }
+    }
+
+    private BatchCreateResponse toBatchCreateResp(InventoryBatch b) {
+        return BatchCreateResponse.builder()
+                .id(b.getId())
+                .batchCode(b.getBatchCode())
+                .action(b.getAction().name())
+                .totalItems(b.getLogs() != null ? b.getLogs().size() : 0)
+                .supplierRef(b.getSupplierRef())
+                .receiptImageUrl(b.getReceiptImageUrl())
+                .build();
+    }
 
     @GetMapping("/customers/b2b")
     public ResponseEntity<ApiResponse<Map<String, Object>>> getB2bCustomers(
@@ -260,51 +404,6 @@ public class SellerController {
         m.put("createdAt",       c.getCreatedAt());
         return m;
     }
-
-    @PostMapping(
-            value    = "/inventory-imports/manual",
-            consumes = MediaType.MULTIPART_FORM_DATA_VALUE
-    )
-    public ResponseEntity<ApiResponse<ManualImportResponse>> manualImport(
-            @RequestPart("data")                             String        dataJson,
-            @RequestPart(value = "image", required = false)  MultipartFile receiptImage,
-            Authentication authentication) {
-
-        if (authentication == null || !authentication.isAuthenticated())
-            return ResponseEntity.ok(ApiResponse.error(StatusCode.UNAUTHORIZED, "Unauthorized"));
-
-        try {
-            User actor = (User) authentication.getPrincipal();
-
-            // Parse JSON part
-            ManualImportRequest request = objectMapper.readValue(dataJson, ManualImportRequest.class);
-
-            // Upload ảnh phiếu nếu có → lưu vào seller-import/
-            if (receiptImage != null && !receiptImage.isEmpty()) {
-                String imageUrl = fileStorageService.saveSellerImportReceiptImage(receiptImage);
-                request.setReceiptImageUrl(imageUrl);
-                log.info("[SELLER] Receipt image saved: {}", imageUrl);
-            }
-
-            ManualImportResponse result = manualImportService.importBatch(request, actor);
-
-            log.info("[SELLER] Manual import batch {} — {} items by {} | supplier={} | image={}",
-                    result.getBatchCode(), result.getTotalItems(), actor.getUsername(),
-                    result.getSupplierRef()    != null ? result.getSupplierRef()    : "-",
-                    result.getReceiptImageUrl() != null ? result.getReceiptImageUrl() : "-");
-
-            return ResponseEntity.ok(
-                    ApiResponse.success(result, "Nhập kho thành công. Batch: " + result.getBatchCode())
-            );
-        } catch (RuntimeException e) {
-            log.error("[SELLER] Manual import failed: {}", e.getMessage());
-            return ResponseEntity.ok(ApiResponse.error(StatusCode.BAD_REQUEST, e.getMessage()));
-        } catch (Exception e) {
-            log.error("[SELLER] Manual import unexpected error", e);
-            return ResponseEntity.ok(ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
-        }
-    }
-
 
     @PostMapping("/products/{id}/tiers")
     public ResponseEntity<ApiResponse<ProductResponse>> addTier(

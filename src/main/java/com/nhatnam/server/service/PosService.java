@@ -674,7 +674,14 @@ public class PosService {
                 if (!List.of(0, 10, 20, 100).contains(discountPercent))
                     throw new IllegalArgumentException("discountPercent phải là 0/10/20/100");
 
-                basePrice = product.getBasePrice();
+                // ── Dùng finalUnitPrice nếu được gửi (override định lượng) ──
+                if (itemReq.getFinalUnitPrice() != null
+                        && itemReq.getFinalUnitPrice().compareTo(BigDecimal.ZERO) > 0) {
+                    basePrice = itemReq.getFinalUnitPrice();
+                    discountPercent = 0; // giá đã tính sẵn, không discount thêm
+                } else {
+                    basePrice = product.getBasePrice();
+                }
             }
 
             // ── Tính addon RAW (trước rate) ──────────────────────
