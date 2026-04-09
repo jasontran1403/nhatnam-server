@@ -10,23 +10,30 @@ import java.math.BigDecimal;
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 public class PosShiftCloseInventory {
 
-    @Id @GeneratedValue(strategy = GenerationType.IDENTITY)
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
     private Long id;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "shift_id", nullable = false)
-    @ToString.Exclude @EqualsAndHashCode.Exclude
     private PosShift shift;
 
-    @ManyToOne(fetch = FetchType.EAGER)
-    @JoinColumn(name = "ingredient_id", nullable = false)
-    private PosIngredient ingredient;
+    @Column(name = "ingredient_id", nullable = true)
+    private Long ingredientId;
+
+    @Column(name = "ingredient_name", nullable = false, length = 255)
+    private String ingredientName;
+
+    @Column(name = "unit", nullable = false, length = 50)
+    private String unit;
 
     @Column(name = "pack_quantity", nullable = false)
     private Integer packQuantity = 0;
 
-    // Số lẻ cuối ca — cho phép thập phân tối đa 2 chữ số (VD: 0.25)
     @Column(name = "unit_quantity", nullable = false, precision = 10, scale = 2)
     @Builder.Default
     private BigDecimal unitQuantity = BigDecimal.ZERO;
+
+    @Column(name = "addon_price", precision = 15, scale = 2)
+    private BigDecimal addonPrice;
 }

@@ -9,16 +9,12 @@ import java.util.List;
 
 public interface PosShiftStockImportRepository extends JpaRepository<PosShiftStockImport, Long> {
     List<PosShiftStockImport> findByShift(PosShift shift);
-    List<PosShiftStockImport> findByShiftAndIngredient(PosShift shift, PosIngredient ingredient);
-
-    @Query("SELECT i FROM PosShiftStockImport i JOIN FETCH i.ingredient WHERE i.shift = :shift")
-    List<PosShiftStockImport> findByShiftWithIngredient(@Param("shift") PosShift shift);
 
     List<PosShiftStockImport> findByShift_IdOrderByImportedAtDesc(Long shiftId);
 
-     @Query("SELECT i.ingredient.id, COALESCE(SUM(i.packQty), 0) " +
+     @Query("SELECT i.ingredientId, COALESCE(SUM(i.packQty), 0) " +
         "FROM PosShiftStockImport i " +
         "WHERE i.shift.id = :shiftId " +
-        "GROUP BY i.ingredient.id")
+        "GROUP BY i.ingredientId")
     List<Object[]> sumPackQtyByShiftId(@Param("shiftId") Long shiftId);
 }

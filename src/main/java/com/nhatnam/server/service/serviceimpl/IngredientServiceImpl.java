@@ -40,7 +40,6 @@ public class IngredientServiceImpl implements IngredientService {
                 .build();
 
         Ingredient saved = ingredientRepository.save(ingredient);
-        log.info("✅ Created ingredient: {} (ID: {})", saved.getName(), saved.getId());
 
         return mapToResponse(saved);
     }
@@ -58,7 +57,6 @@ public class IngredientServiceImpl implements IngredientService {
         ingredient.setUpdatedAt(System.currentTimeMillis());
 
         Ingredient updated = ingredientRepository.save(ingredient);
-        log.info("✅ Updated ingredient: {} (ID: {})", updated.getName(), updated.getId());
 
         return mapToResponse(updated);
     }
@@ -73,7 +71,6 @@ public class IngredientServiceImpl implements IngredientService {
         ingredient.setUpdatedAt(System.currentTimeMillis());
         ingredientRepository.save(ingredient);
 
-        log.info("✅ Deleted (soft) ingredient: {} (ID: {})", ingredient.getName(), ingredient.getId());
     }
 
     @Override

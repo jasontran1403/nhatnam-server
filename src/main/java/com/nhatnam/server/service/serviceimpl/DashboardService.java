@@ -45,21 +45,26 @@ public class DashboardService {
     // ══════════════════════════════════════════════════════════
 
     public DashboardDto.RestaurantDashboard getRestaurantDashboard(
-            DashboardDto.DateRangeFilter filter, String granularity) {
+            DashboardDto.DateRangeFilter filter, String granularity, String mode) {
         Long from = filter.getFromTs();
         Long to   = filter.getToTs();
+
+        // mode: "wholesale" → type=WHOLESALE, "retail" → type=RETAIL, null → tất cả
+        String orderType = mode == null ? null
+                : mode.equalsIgnoreCase("wholesale") ? "WHOLESALE" : "RETAIL";
+
         return DashboardDto.RestaurantDashboard.builder()
-                .orderSummary(getOrderSummary(from, to))
-                .revenueSummary(getRevenueSummary(from, to))
-                .customerSummary(getCustomerSummary(from, to))
-                .paymentBreakdown(getPaymentBreakdown(from, to))
-                .topProducts(getTopProducts(from, to, 10))
-                .topIngredients(getTopIngredients(from, to, 10))
-                .topCustomers(getTopCustomers(from, to, 10))
-                .topUsers(getTopUsers(from, to, 10))
-                .ordersByTime(getOrdersByTime(from, to, granularity))
-                .regionBreakdown(getRegionBreakdown(from, to))
-                .recentOrders(getRecentOrders(from, to, 5))
+                .orderSummary(getOrderSummary(from, to, orderType))
+                .revenueSummary(getRevenueSummary(from, to, orderType))
+                .customerSummary(getCustomerSummary(from, to, orderType))
+                .paymentBreakdown(getPaymentBreakdown(from, to, orderType))
+                .topProducts(getTopProducts(from, to, 10, orderType))
+                .topIngredients(getTopIngredients(from, to, 10, orderType))
+                .topCustomers(getTopCustomers(from, to, 10, orderType))
+                .topUsers(getTopUsers(from, to, 10, orderType))
+                .ordersByTime(getOrdersByTime(from, to, granularity, orderType))
+                .regionBreakdown(getRegionBreakdown(from, to, orderType))
+                .recentOrders(getRecentOrders(from, to, 5, orderType))
                 .build();
     }
 
@@ -99,13 +104,17 @@ public class DashboardService {
     // RESTAURANT — ORDER SUMMARY
     // ══════════════════════════════════════════════════════════
 
-    private DashboardDto.OrderSummary getOrderSummary(Long from, Long to) {
+    private DashboardDto.OrderSummary getOrderSummary(Long from, Long to, String orderType) {
         List<Object[]> rows = em.createQuery(
                         "SELECT o.status, COUNT(o) FROM Order o " +
                                 "WHERE (:from IS NULL OR o.createdAt >= :from) " +
                                 "  AND (:to   IS NULL OR o.createdAt <= :to) " +
+                                "  AND (:orderType IS NULL OR o.type = :orderType) " + // ← THÊM
                                 "GROUP BY o.status", Object[].class)
-                .setParameter("from", from).setParameter("to", to).getResultList();
+                .setParameter("from", from)
+                .setParameter("to", to)
+                .setParameter("orderType", orderType) // ← THÊM
+                .getResultList();
 
         Map<String, Long> map = new HashMap<>();
         long total = 0;
@@ -127,73 +136,6 @@ public class DashboardService {
                 .failedOrders(map.getOrDefault("FAILED", 0L))
                 .build();
     }
-
-    // ══════════════════════════════════════════════════════════
-    // RESTAURANT — REVENUE SUMMARY
-    // ══════════════════════════════════════════════════════════
-
-    private DashboardDto.RevenueSummary getRevenueSummary(Long from, Long to) {
-        Object[] completedRow = (Object[]) em.createQuery(
-                        "SELECT COALESCE(SUM(o.finalAmount),0), COALESCE(SUM(o.discountAmount),0), " +
-                                "       COALESCE(SUM(o.vatAmount),0) FROM Order o " +
-                                "WHERE o.status = :status " +
-                                "  AND (:from IS NULL OR o.createdAt >= :from) " +
-                                "  AND (:to   IS NULL OR o.createdAt <= :to)")
-                .setParameter("status", OrderStatus.COMPLETED)
-                .setParameter("from", from).setParameter("to", to).getSingleResult();
-
-        BigDecimal pendingRevenue = (BigDecimal) em.createQuery(
-                        "SELECT COALESCE(SUM(o.finalAmount),0) FROM Order o " +
-                                "WHERE o.status IN :statuses " +
-                                "  AND (:from IS NULL OR o.createdAt >= :from) " +
-                                "  AND (:to   IS NULL OR o.createdAt <= :to)")
-                .setParameter("statuses", ACTIVE_STATUSES)
-                .setParameter("from", from).setParameter("to", to).getSingleResult();
-
-        return DashboardDto.RevenueSummary.builder()
-                .completedRevenue((BigDecimal) completedRow[0])
-                .totalDiscount((BigDecimal) completedRow[1])
-                .totalVat((BigDecimal) completedRow[2])
-                .pendingRevenue(pendingRevenue != null ? pendingRevenue : BigDecimal.ZERO)
-                .build();
-    }
-
-    // ══════════════════════════════════════════════════════════
-    // RESTAURANT — CUSTOMER SUMMARY
-    // ══════════════════════════════════════════════════════════
-
-    private DashboardDto.CustomerSummary getCustomerSummary(Long from, Long to) {
-        Long newCustomers = (Long) em.createQuery(
-                        "SELECT COUNT(DISTINCT o.customer.id) FROM Order o " +
-                                "WHERE o.customer IS NOT NULL " +
-                                "  AND (:from IS NULL OR o.createdAt >= :from) " +
-                                "  AND (:to   IS NULL OR o.createdAt <= :to) " +
-                                "  AND o.customer.id NOT IN (" +
-                                "      SELECT DISTINCT o2.customer.id FROM Order o2 " +
-                                "      WHERE o2.customer IS NOT NULL " +
-                                "        AND :from IS NOT NULL AND o2.createdAt < :from)")
-                .setParameter("from", from).setParameter("to", to).getSingleResult();
-
-        Long returningCustomers = (Long) em.createQuery(
-                        "SELECT COUNT(DISTINCT o.customer.id) FROM Order o " +
-                                "WHERE o.customer IS NOT NULL " +
-                                "  AND (:from IS NULL OR o.createdAt >= :from) " +
-                                "  AND (:to   IS NULL OR o.createdAt <= :to) " +
-                                "  AND o.customer.id IN (" +
-                                "      SELECT DISTINCT o2.customer.id FROM Order o2 " +
-                                "      WHERE o2.customer IS NOT NULL " +
-                                "        AND :from IS NOT NULL AND o2.createdAt < :from)")
-                .setParameter("from", from).setParameter("to", to).getSingleResult();
-
-        return DashboardDto.CustomerSummary.builder()
-                .newCustomers(newCustomers == null ? 0L : newCustomers)
-                .returningCustomers(returningCustomers == null ? 0L : returningCustomers)
-                .build();
-    }
-
-    // ══════════════════════════════════════════════════════════
-    // RESTAURANT — PAYMENT BREAKDOWN
-    // ══════════════════════════════════════════════════════════
 
     private static String paymentLabel(String method) {
         return switch (method) {
@@ -227,15 +169,106 @@ public class DashboardService {
     // RESTAURANT — TOP PRODUCTS / INGREDIENTS / CUSTOMERS / USERS
     // ══════════════════════════════════════════════════════════
 
-    private List<DashboardDto.TopProduct> getTopProducts(Long from, Long to, int limit) {
+    private DashboardDto.RevenueSummary getRevenueSummary(Long from, Long to, String orderType) {
+        Object[] completedRow = (Object[]) em.createQuery(
+                        "SELECT COALESCE(SUM(o.finalAmount),0), COALESCE(SUM(o.discountAmount),0), " +
+                                "       COALESCE(SUM(o.vatAmount),0) FROM Order o " +
+                                "WHERE o.status = :status " +
+                                "  AND (:from IS NULL OR o.createdAt >= :from) " +
+                                "  AND (:to   IS NULL OR o.createdAt <= :to) " +
+                                "  AND (:orderType IS NULL OR o.type = :orderType)")
+                .setParameter("status", OrderStatus.COMPLETED)
+                .setParameter("from", from).setParameter("to", to)
+                .setParameter("orderType", orderType)
+                .getSingleResult();
+
+        BigDecimal pendingRevenue = (BigDecimal) em.createQuery(
+                        "SELECT COALESCE(SUM(o.finalAmount),0) FROM Order o " +
+                                "WHERE o.status IN :statuses " +
+                                "  AND (:from IS NULL OR o.createdAt >= :from) " +
+                                "  AND (:to   IS NULL OR o.createdAt <= :to) " +
+                                "  AND (:orderType IS NULL OR o.type = :orderType)")
+                .setParameter("statuses", ACTIVE_STATUSES)
+                .setParameter("from", from).setParameter("to", to)
+                .setParameter("orderType", orderType)
+                .getSingleResult();
+
+        return DashboardDto.RevenueSummary.builder()
+                .completedRevenue((BigDecimal) completedRow[0])
+                .totalDiscount((BigDecimal) completedRow[1])
+                .totalVat((BigDecimal) completedRow[2])
+                .pendingRevenue(pendingRevenue != null ? pendingRevenue : BigDecimal.ZERO)
+                .build();
+    }
+
+    private DashboardDto.CustomerSummary getCustomerSummary(Long from, Long to, String orderType) {
+        Long newCustomers = (Long) em.createQuery(
+                        "SELECT COUNT(DISTINCT o.customer.id) FROM Order o " +
+                                "WHERE o.customer IS NOT NULL " +
+                                "  AND (:from IS NULL OR o.createdAt >= :from) " +
+                                "  AND (:to   IS NULL OR o.createdAt <= :to) " +
+                                "  AND (:orderType IS NULL OR o.type = :orderType) " +
+                                "  AND o.customer.id NOT IN (" +
+                                "      SELECT DISTINCT o2.customer.id FROM Order o2 " +
+                                "      WHERE o2.customer IS NOT NULL " +
+                                "        AND :from IS NOT NULL AND o2.createdAt < :from " +
+                                "        AND (:orderType IS NULL OR o2.type = :orderType))")
+                .setParameter("from", from).setParameter("to", to)
+                .setParameter("orderType", orderType).getSingleResult();
+
+        Long returningCustomers = (Long) em.createQuery(
+                        "SELECT COUNT(DISTINCT o.customer.id) FROM Order o " +
+                                "WHERE o.customer IS NOT NULL " +
+                                "  AND (:from IS NULL OR o.createdAt >= :from) " +
+                                "  AND (:to   IS NULL OR o.createdAt <= :to) " +
+                                "  AND (:orderType IS NULL OR o.type = :orderType) " +
+                                "  AND o.customer.id IN (" +
+                                "      SELECT DISTINCT o2.customer.id FROM Order o2 " +
+                                "      WHERE o2.customer IS NOT NULL " +
+                                "        AND :from IS NOT NULL AND o2.createdAt < :from " +
+                                "        AND (:orderType IS NULL OR o2.type = :orderType))")
+                .setParameter("from", from).setParameter("to", to)
+                .setParameter("orderType", orderType).getSingleResult();
+
+        return DashboardDto.CustomerSummary.builder()
+                .newCustomers(newCustomers == null ? 0L : newCustomers)
+                .returningCustomers(returningCustomers == null ? 0L : returningCustomers)
+                .build();
+    }
+
+    private DashboardDto.PaymentBreakdown getPaymentBreakdown(Long from, Long to, String orderType) {
+        List<Object[]> rows = em.createQuery(
+                        "SELECT o.paymentMethod, COUNT(o), COALESCE(SUM(o.finalAmount),0) " +
+                                "FROM Order o WHERE o.status = :status " +
+                                "  AND (:from IS NULL OR o.createdAt >= :from) " +
+                                "  AND (:to   IS NULL OR o.createdAt <= :to) " +
+                                "  AND (:orderType IS NULL OR o.type = :orderType) " +
+                                "GROUP BY o.paymentMethod ORDER BY SUM(o.finalAmount) DESC", Object[].class)
+                .setParameter("status", OrderStatus.COMPLETED)
+                .setParameter("from", from).setParameter("to", to)
+                .setParameter("orderType", orderType).getResultList();
+
+        List<DashboardDto.PaymentMethodItem> methods = new ArrayList<>();
+        for (Object[] r : rows) {
+            methods.add(DashboardDto.PaymentMethodItem.builder()
+                    .method(r[0] != null ? r[0].toString() : "OTHER")
+                    .label(paymentLabel(r[0] != null ? r[0].toString() : "OTHER"))
+                    .amount((BigDecimal) r[2]).count((Long) r[1]).build());
+        }
+        return DashboardDto.PaymentBreakdown.builder().methods(methods).build();
+    }
+
+    private List<DashboardDto.TopProduct> getTopProducts(Long from, Long to, int limit, String orderType) {
         return em.createQuery(
                         "SELECT oi.productId, MAX(oi.productName), MAX(oi.productImageUrl), " +
                                 "       SUM(oi.quantity), SUM(oi.subtotal), COUNT(DISTINCT oi.order.id) " +
                                 "FROM OrderItem oi " +
                                 "WHERE (:from IS NULL OR oi.order.createdAt >= :from) " +
                                 "  AND (:to   IS NULL OR oi.order.createdAt <= :to) " +
+                                "  AND (:orderType IS NULL OR oi.order.type = :orderType) " +
                                 "GROUP BY oi.productId ORDER BY SUM(oi.subtotal) DESC", Object[].class)
-                .setParameter("from", from).setParameter("to", to).setMaxResults(limit)
+                .setParameter("from", from).setParameter("to", to)
+                .setParameter("orderType", orderType).setMaxResults(limit)
                 .getResultList().stream().map(r -> DashboardDto.TopProduct.builder()
                         .productId((Long) r[0]).productName((String) r[1])
                         .productImageUrl((String) r[2]).totalQuantity((BigDecimal) r[3])
@@ -243,15 +276,17 @@ public class DashboardService {
                 .collect(Collectors.toList());
     }
 
-    private List<DashboardDto.TopIngredient> getTopIngredients(Long from, Long to, int limit) {
+    private List<DashboardDto.TopIngredient> getTopIngredients(Long from, Long to, int limit, String orderType) {
         return em.createQuery(
                         "SELECT oii.ingredientId, MAX(oii.ingredientName), MAX(oii.unit), " +
                                 "       SUM(oii.quantityUsed), COUNT(oii.id) " +
                                 "FROM OrderItemIngredient oii " +
                                 "WHERE (:from IS NULL OR oii.orderItem.order.createdAt >= :from) " +
                                 "  AND (:to   IS NULL OR oii.orderItem.order.createdAt <= :to) " +
+                                "  AND (:orderType IS NULL OR oii.orderItem.order.type = :orderType) " +
                                 "GROUP BY oii.ingredientId ORDER BY SUM(oii.quantityUsed) DESC", Object[].class)
-                .setParameter("from", from).setParameter("to", to).setMaxResults(limit)
+                .setParameter("from", from).setParameter("to", to)
+                .setParameter("orderType", orderType).setMaxResults(limit)
                 .getResultList().stream().map(r -> DashboardDto.TopIngredient.builder()
                         .ingredientId((Long) r[0]).ingredientName((String) r[1])
                         .unit((String) r[2]).totalQuantityUsed((BigDecimal) r[3])
@@ -259,15 +294,17 @@ public class DashboardService {
                 .collect(Collectors.toList());
     }
 
-    private List<DashboardDto.TopCustomer> getTopCustomers(Long from, Long to, int limit) {
+    private List<DashboardDto.TopCustomer> getTopCustomers(Long from, Long to, int limit, String orderType) {
         return em.createQuery(
                         "SELECT o.customer.id, MAX(o.customerName), MAX(o.customerPhone), " +
                                 "       COUNT(o.id), COALESCE(SUM(o.finalAmount),0) " +
                                 "FROM Order o WHERE o.customer IS NOT NULL " +
                                 "  AND (:from IS NULL OR o.createdAt >= :from) " +
                                 "  AND (:to   IS NULL OR o.createdAt <= :to) " +
+                                "  AND (:orderType IS NULL OR o.type = :orderType) " +
                                 "GROUP BY o.customer.id ORDER BY SUM(o.finalAmount) DESC", Object[].class)
-                .setParameter("from", from).setParameter("to", to).setMaxResults(limit)
+                .setParameter("from", from).setParameter("to", to)
+                .setParameter("orderType", orderType).setMaxResults(limit)
                 .getResultList().stream().map(r -> DashboardDto.TopCustomer.builder()
                         .customerId((Long) r[0]).customerName((String) r[1])
                         .customerPhone((String) r[2]).orderCount((Long) r[3])
@@ -275,32 +312,32 @@ public class DashboardService {
                 .collect(Collectors.toList());
     }
 
-    private List<DashboardDto.TopUser> getTopUsers(Long from, Long to, int limit) {
+    private List<DashboardDto.TopUser> getTopUsers(Long from, Long to, int limit, String orderType) {
         return em.createQuery(
                         "SELECT o.user.id, MAX(o.user.username), MAX(o.user.fullName), " +
                                 "       COUNT(o.id), COALESCE(SUM(o.finalAmount),0) " +
                                 "FROM Order o " +
                                 "WHERE (:from IS NULL OR o.createdAt >= :from) " +
                                 "  AND (:to   IS NULL OR o.createdAt <= :to) " +
+                                "  AND (:orderType IS NULL OR o.type = :orderType) " +
                                 "GROUP BY o.user.id ORDER BY COUNT(o.id) DESC", Object[].class)
-                .setParameter("from", from).setParameter("to", to).setMaxResults(limit)
+                .setParameter("from", from).setParameter("to", to)
+                .setParameter("orderType", orderType).setMaxResults(limit)
                 .getResultList().stream().map(r -> DashboardDto.TopUser.builder()
                         .userId((Long) r[0]).userName((String) r[1]).fullName((String) r[2])
                         .orderCount((Long) r[3]).totalRevenue((BigDecimal) r[4]).build())
                 .collect(Collectors.toList());
     }
 
-    // ══════════════════════════════════════════════════════════
-    // RESTAURANT — ORDERS BY TIME
-    // ══════════════════════════════════════════════════════════
-
-    private List<DashboardDto.OrderByTime> getOrdersByTime(Long from, Long to, String granularity) {
+    private List<DashboardDto.OrderByTime> getOrdersByTime(Long from, Long to, String granularity, String orderType) {
         List<Object[]> rows = em.createQuery(
                         "SELECT o.createdAt, o.finalAmount FROM Order o " +
                                 "WHERE (:from IS NULL OR o.createdAt >= :from) " +
                                 "  AND (:to   IS NULL OR o.createdAt <= :to) " +
+                                "  AND (:orderType IS NULL OR o.type = :orderType) " +
                                 "ORDER BY o.createdAt ASC", Object[].class)
-                .setParameter("from", from).setParameter("to", to).getResultList();
+                .setParameter("from", from).setParameter("to", to)
+                .setParameter("orderType", orderType).getResultList();
 
         Map<String, long[]>     buckets = new LinkedHashMap<>();
         Map<String, BigDecimal> revMap  = new LinkedHashMap<>();
@@ -315,18 +352,16 @@ public class DashboardService {
                 .collect(Collectors.toList());
     }
 
-    // ══════════════════════════════════════════════════════════
-    // RESTAURANT — REGION BREAKDOWN
-    // ══════════════════════════════════════════════════════════
-
-    private List<DashboardDto.RegionBreakdown> getRegionBreakdown(Long from, Long to) {
+    private List<DashboardDto.RegionBreakdown> getRegionBreakdown(Long from, Long to, String orderType) {
         List<Object[]> rows = em.createQuery(
                         "SELECT o.shippingAddress, COUNT(o.id), COALESCE(SUM(o.finalAmount),0) " +
                                 "FROM Order o WHERE o.shippingAddress IS NOT NULL " +
                                 "  AND (:from IS NULL OR o.createdAt >= :from) " +
                                 "  AND (:to   IS NULL OR o.createdAt <= :to) " +
+                                "  AND (:orderType IS NULL OR o.type = :orderType) " +
                                 "GROUP BY o.shippingAddress", Object[].class)
-                .setParameter("from", from).setParameter("to", to).getResultList();
+                .setParameter("from", from).setParameter("to", to)
+                .setParameter("orderType", orderType).getResultList();
 
         Map<String, long[]>     countMap = new LinkedHashMap<>();
         Map<String, BigDecimal> revMap   = new LinkedHashMap<>();
@@ -343,19 +378,17 @@ public class DashboardService {
                 .collect(Collectors.toList());
     }
 
-    // ══════════════════════════════════════════════════════════
-    // RESTAURANT — RECENT ORDERS
-    // ══════════════════════════════════════════════════════════
-
-    private List<DashboardDto.RecentOrder> getRecentOrders(Long from, Long to, int limit) {
+    private List<DashboardDto.RecentOrder> getRecentOrders(Long from, Long to, int limit, String orderType) {
         return em.createQuery(
                         "SELECT o.id, o.orderCode, o.customerName, o.createdAt, " +
                                 "       o.totalAmount, o.discountAmount, o.vatAmount, o.finalAmount, " +
                                 "       o.status, o.paymentStatus FROM Order o " +
                                 "WHERE (:from IS NULL OR o.createdAt >= :from) " +
                                 "  AND (:to   IS NULL OR o.createdAt <= :to) " +
+                                "  AND (:orderType IS NULL OR o.type = :orderType) " +
                                 "ORDER BY o.createdAt DESC", Object[].class)
-                .setParameter("from", from).setParameter("to", to).setMaxResults(limit)
+                .setParameter("from", from).setParameter("to", to)
+                .setParameter("orderType", orderType).setMaxResults(limit)
                 .getResultList().stream().map(r -> DashboardDto.RecentOrder.builder()
                         .orderId((Long) r[0]).orderCode((String) r[1])
                         .customerName((String) r[2]).createdAt((Long) r[3])
@@ -367,6 +400,7 @@ public class DashboardService {
                         .paymentStatus(r[9] != null ? ((Enum<?>) r[9]).name() : null).build())
                 .collect(Collectors.toList());
     }
+
 
     // ══════════════════════════════════════════════════════════
     // POS — ORDER SUMMARY

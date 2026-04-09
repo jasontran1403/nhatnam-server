@@ -8,16 +8,6 @@ import org.springframework.data.repository.query.Param;
 import java.util.List;
 import java.util.Optional;
 public interface PosShiftRepository extends JpaRepository<PosShift, Long> {
-    Optional<PosShift> findByStatusAndOpenedById(ShiftStatus status, Long userId);
-    List<PosShift> findTopByShiftDateOrderByOpenTimeDesc(String shiftDate);
-    Optional<PosShift> findTopByShiftDateAndStatusOrderByCloseTimeDesc(String shiftDate, ShiftStatus status);
-    List<PosShift> findByShiftDateOrderByOpenTimeAsc(String shiftDate);
-    List<PosShift> findByShiftDateBetweenAndStatusOrderByShiftDateAscOpenTimeAsc(
-            String fromDate, String toDate, ShiftStatus status);
-    List<PosShift> findByShiftDateBetweenAndStatusOrderByShiftDateDescOpenTimeDesc(
-            String fromDate, String toDate, ShiftStatus status);
-    boolean existsByShiftDate(String shiftDate);
-
     @Query("""
         SELECT s FROM PosShift s
         WHERE s.shiftDate BETWEEN :fromDate AND :toDate
@@ -67,19 +57,6 @@ public interface PosShiftRepository extends JpaRepository<PosShift, Long> {
             @Param("userId")  Long userId,
             @Param("status")  ShiftStatus status);
 
-    /**
-     * Ca mới nhất trong ngày của store (bất kể status).
-     */
-    @Query("""
-        SELECT s FROM PosShift s
-        JOIN PosUserStore pus ON pus.user.id = s.openedBy.id
-        WHERE pus.store.id = :storeId AND s.shiftDate = :shiftDate
-        ORDER BY s.openTime DESC
-        LIMIT 1
-    """)
-    Optional<PosShift> findLatestShiftByStoreAndDate(
-            @Param("storeId")   Long storeId,
-            @Param("shiftDate") String shiftDate);
 
     /**
      * Ca CLOSED mới nhất trong ngày của store.

@@ -43,7 +43,6 @@ public class AppVersionDataInitializer implements CommandLineRunner {
                     .downloadUrl(url)
                     .message(message)
                     .build());
-            log.info("[AppVersion] Seeded platform={} version={}+{}", platform, latestVer, latestBuild);
         }
     }
 }

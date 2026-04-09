@@ -434,29 +434,17 @@ public class PosController {
     // ════════════════════════════════════════
     // CATEGORY — data theo store
     // ════════════════════════════════════════
-
     @GetMapping("/categories")
-    public ResponseEntity<ApiResponse<List<PosCategoryResponse>>> getCategories(Authentication auth) {
+    public ResponseEntity<ApiResponse<List<PosCategoryResponse>>> getCategories(
+            @RequestParam(defaultValue = "false") boolean includeDefault,
+            Authentication auth) {
         try {
             Long storeId = extractStoreId(extractUserId(auth));
             return ResponseEntity.ok(ApiResponse.success(
-                    posService.getAllCategories(storeId), "OK"));
+                    posService.getAllCategories(storeId, includeDefault), "OK"));
         } catch (Exception e) {
             log.error("[POS] getCategories error", e);
             return ResponseEntity.ok(ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
-        }
-    }
-
-    @PostMapping("/categories")
-    public ResponseEntity<ApiResponse<PosCategoryResponse>> createCategory(
-            @Valid @RequestBody CreatePosCategoryRequest req, Authentication auth) {
-        try {
-            Long storeId = extractStoreId(extractUserId(auth));
-            return ResponseEntity.ok(ApiResponse.success(
-                    posService.createCategory(req, storeId), "Category created"));
-        } catch (Exception e) {
-            log.error("[POS] createCategory error", e);
-            return ResponseEntity.ok(ApiResponse.error(StatusCode.BAD_REQUEST, e.getMessage()));
         }
     }
 
@@ -502,7 +490,6 @@ public class PosController {
             Long storeId = extractStoreId(extractUserId(auth));
             String today = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd"));
             boolean isFirst = posService.isFirstShiftOfDay(today, storeId);
-            log.info("Is first shift: {} from storeId {}", isFirst,  storeId);
             return ResponseEntity.ok(ApiResponse.success(isFirst, "OK"));
         } catch (Exception e) {
             return ResponseEntity.ok(ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
@@ -576,7 +563,7 @@ public class PosController {
     @DeleteMapping("/ingredients/{id}")
     public ResponseEntity<ApiResponse<Object>> deleteIngredient(@PathVariable Long id) {
         try {
-//            posService.deleteIngredient(id);
+            posService.deleteIngredient(id);
             return ResponseEntity.ok(ApiResponse.success(null, "Ingredient deleted"));
         } catch (RuntimeException e) {
             return ResponseEntity.ok(ApiResponse.error(StatusCode.NOT_FOUND, e.getMessage()));
@@ -815,7 +802,6 @@ public class PosController {
             Long userId  = extractUserId(auth);
             Long storeId = extractStoreId(userId);
             PosOrderResponse order = posService.createOrder(req, userId, storeId);
-            log.info("[POS] Order created: {}", order.getOrderCode());
             return ResponseEntity.ok(ApiResponse.success(order, "Đơn hàng tạo thành công"));
         } catch (IllegalArgumentException e) {
             log.warn("[POS] createOrder validation: {}", e.getMessage());

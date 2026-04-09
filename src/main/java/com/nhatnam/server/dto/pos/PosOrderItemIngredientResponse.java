@@ -17,6 +17,7 @@ public class PosOrderItemIngredientResponse {
     private Long   ingredientId;
     private String ingredientName;
     private String ingredientImageUrl;
+    private BigDecimal addonPrice;
 
     /** Số lần chọn (số unit). */
     private Integer selectedCount;

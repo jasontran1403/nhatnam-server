@@ -10,11 +10,5 @@ import org.springframework.transaction.annotation.Transactional;
 import java.util.List;
 
 public interface ProductIngredientRepository extends JpaRepository<ProductIngredient, Long> {
-    // THÊM method này
     List<ProductIngredient> findByProductId(Long productId);
-
-    @Modifying
-    @Transactional
-    @Query("DELETE FROM ProductIngredient pi WHERE pi.product.id = :productId")
-    void deleteByProductId(@Param("productId") Long productId);
 }

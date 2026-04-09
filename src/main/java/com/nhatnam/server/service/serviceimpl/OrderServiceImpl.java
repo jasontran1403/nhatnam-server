@@ -132,7 +132,7 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional
     public OrderResponse createOrder(CreateOrderRequest request, Long userId) {
-        log.info("[ORDER] createOrder userId={}", userId);
+
         long now = System.currentTimeMillis();
 
         String companyPhone   = null;
@@ -312,8 +312,6 @@ public class OrderServiceImpl implements OrderService {
         if (!logs.isEmpty()) inventoryLogRepository.saveAll(logs);
         Order finalOrder = orderRepository.save(savedOrder);
 
-        log.info("[ORDER] ✅ {} subtotal={} disc={} vat={} final={}",
-                orderCode, subtotal, discountAmount, totalVat, finalAmount);
         return mapToResponse(finalOrder);
     }
 
@@ -605,7 +603,6 @@ public class OrderServiceImpl implements OrderService {
                 .orElseThrow(() -> new RuntimeException("Order not found"));
         order.setStatus(newStatus);
         order.setUpdatedAt(System.currentTimeMillis());
-        log.info("[ORDER] {} → {}", order.getOrderCode(), newStatus);
         return mapToResponse(orderRepository.save(order));
     }
 
@@ -618,7 +615,6 @@ public class OrderServiceImpl implements OrderService {
             throw new RuntimeException("Can only cancel PENDING orders");
         order.setStatus(OrderStatus.CANCELLED);
         order.setUpdatedAt(System.currentTimeMillis());
-        log.info("[ORDER] {} cancelled", order.getOrderCode());
         return mapToResponse(orderRepository.save(order));
     }
 

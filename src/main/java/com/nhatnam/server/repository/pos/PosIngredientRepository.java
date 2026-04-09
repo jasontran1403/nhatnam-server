@@ -8,8 +8,4 @@ public interface PosIngredientRepository extends JpaRepository<PosIngredient, Lo
 
     /** Dùng trong PosService — lọc theo store */
     List<PosIngredient> findByStoreIdAndIsActiveTrueOrderByDisplayOrderAscNameAsc(Long storeId);
-
-    /** Dùng trong PosExcelReportService — lấy TẤT CẢ ingredient active (không lọc store)
-     *  vì report cần hiển thị đầy đủ nguyên liệu của ca */
-    List<PosIngredient> findByIsActiveTrueOrderByDisplayOrderAscNameAsc();
 }

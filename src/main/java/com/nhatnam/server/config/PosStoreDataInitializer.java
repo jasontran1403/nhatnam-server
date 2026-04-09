@@ -61,6 +61,5 @@ public class PosStoreDataInitializer implements CommandLineRunner {
         );
 
         posStoreRepository.saveAll(stores);
-        log.info("✅ Seeded {} PosStore records", stores.size());
     }
 }

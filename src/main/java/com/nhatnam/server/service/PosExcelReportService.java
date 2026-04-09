@@ -133,14 +133,14 @@ public class PosExcelReportService {
 
         List<PosShiftOpenInventory> openInv = openInvRepo.findByShift(shift);
         List<PosShiftCloseInventory> closeInv = closeInvRepo.findByShift(shift);
-        List<PosShiftStockImport> importInv = importRepo.findByShiftWithIngredient(shift);
+        List<PosShiftStockImport> importInv = importRepo.findByShift(shift);
 
         Map<Long, Integer> importMap = new HashMap<>();
         for (PosShiftStockImport imp : importInv) {
-            Long ingId = imp.getIngredient().getId();
+            Long ingId = imp.getIngredientId();                    // ← snapshot
             int packQty = imp.getPackQty() != null ? imp.getPackQty() : 0;
-            int unitPerPack = imp.getIngredient().getUnitPerPack() != null ?
-                    imp.getIngredient().getUnitPerPack() : 1;
+            int unitPerPack = imp.getUnitPerPack() != null         // ← snapshot
+                    ? imp.getUnitPerPack() : 1;
             importMap.merge(ingId, packQty * unitPerPack, Integer::sum);
         }
 
@@ -186,9 +186,16 @@ public class PosExcelReportService {
         }
 
         Map<Long, PosShiftOpenInventory> openMap = openInv.stream()
-                .collect(Collectors.toMap(i -> i.getIngredient().getId(), i -> i));
+                .collect(Collectors.toMap(
+                        PosShiftOpenInventory::getIngredientId,  // ← thay i.getIngredient().getId()
+                        i -> i
+                ));
         Map<Long, PosShiftCloseInventory> closeMap = closeInv.stream()
-                .collect(Collectors.toMap(i -> i.getIngredient().getId(), i -> i));
+                .collect(Collectors.toMap(
+                        PosShiftCloseInventory::getIngredientId,  // ← thay i.getIngredient().getId()
+                        i -> i
+                ));
+
 
         // ============ FILTER INGREDIENTS THEO STORE_ID ============
         List<PosIngredient> allIngs = ingredientRepo

@@ -83,7 +83,6 @@ public class AuthenticationController {
             @RequestParam String version,
             @RequestParam(defaultValue = "0") int build) {  // ← thêm build param
 
-        log.info("[VersionCheck] platform={} version={} build={}", platform, version, build);
 
         try {
             Optional<AppVersion> opt = appVersionRepository.findByPlatform(platform.toLowerCase().trim());

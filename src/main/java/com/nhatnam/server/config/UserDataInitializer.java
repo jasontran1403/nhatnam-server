@@ -30,7 +30,6 @@ public class UserDataInitializer implements CommandLineRunner {
     @Override
     public void run(String... args) {
         if (userRepository.count() > 0) {
-            log.info("[UserInit] Users already exist, skipping.");
             return;
         }
 
@@ -150,7 +149,5 @@ public class UserDataInitializer implements CommandLineRunner {
                 .timeCreate(1771838841030L)
                 .username("longphan")
                 .build());
-
-        log.info("[UserInit] Seeded 8 users successfully.");
     }
 }

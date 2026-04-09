@@ -116,10 +116,7 @@ public class ManualImportServiceImpl implements ManualImportService {
                     .build();
             inventoryLogRepository.save(logEntry);
 
-            log.info("[IMPORT] {} | {} +{} → {} | batch={} | supplier={} | hasImage={}",
-                    ing.getName(), before, added, after, batchCode,
-                    supplierRef != null ? supplierRef : "-",
-                    receiptImage != null ? "yes" : "no");
+
 
             results.add(ManualImportResponse.ImportItemResult.builder()
                     .ingredientId(ing.getId())
@@ -133,10 +130,7 @@ public class ManualImportServiceImpl implements ManualImportService {
                     .build());
         }
 
-        log.info("[IMPORT] Batch {} completed: {} items by {} | supplier={} | receiptImage={}",
-                batchCode, results.size(), actor.getUsername(),
-                supplierRef  != null ? supplierRef  : "-",
-                receiptImage != null ? receiptImage : "-");
+
 
         return ManualImportResponse.builder()
                 .batchCode(batchCode)

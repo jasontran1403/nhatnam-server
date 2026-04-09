@@ -12,7 +12,7 @@ public interface PosShiftCloseInventoryRepository extends JpaRepository<PosShift
     List<PosShiftCloseInventory> findByShift(PosShift shift);
 
     @Query("SELECT i FROM PosShiftCloseInventory i " +
-            "WHERE i.shift.id = :shiftId AND i.ingredient.id = :ingredientId")
+            "WHERE i.shift.id = :shiftId AND i.ingredientId = :ingredientId")
     Optional<PosShiftCloseInventory> findByShiftAndIngredient_Id(
             @Param("shiftId") Long shiftId,
             @Param("ingredientId") Long ingredientId);

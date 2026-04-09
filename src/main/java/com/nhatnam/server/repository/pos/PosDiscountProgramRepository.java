@@ -12,7 +12,6 @@ public interface PosDiscountProgramRepository extends JpaRepository<PosDiscountP
 
     List<PosDiscountProgram> findAllByOrderByCreatedAtDesc();
 
-    // Lấy program đang trong apply period và ACTIVE
     @Query("""
         SELECT p FROM PosDiscountProgram p
         WHERE p.status = 'ACTIVE'

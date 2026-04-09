@@ -36,7 +36,6 @@ public class FileUploadController {
             @RequestParam("file") MultipartFile file) {
         try {
             String imageUrl = fileStorageService.saveCategoryImage(file);
-            log.info("✅ Category image uploaded: {}", imageUrl);
             return ResponseEntity.ok(ApiResponse.success(imageUrl, "Image uploaded successfully"));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(ApiResponse.error(StatusCode.BAD_REQUEST, e.getMessage()));

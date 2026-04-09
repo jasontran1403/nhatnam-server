@@ -10,9 +10,6 @@ import java.util.List;
 public interface PosOrderItemIngredientRepository extends JpaRepository<PosOrderItemIngredient, Long> {
     List<PosOrderItemIngredient> findByOrderItem(PosOrderItem orderItem);
 
-    // ← THÊM: lấy ingredients của nhiều order items (dùng trong buildSheet1)
-    List<PosOrderItemIngredient> findByOrderItemIn(List<PosOrderItem> orderItems);
-
     @Query("SELECT oii FROM PosOrderItemIngredient oii " +
             "WHERE oii.orderItem.order.shift.id = :shiftId " +
             "AND oii.orderItem.order.status != com.nhatnam.server.enumtype.PosOrderStatus.CANCELLED")

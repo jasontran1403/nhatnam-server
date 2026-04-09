@@ -10,11 +10,5 @@ import java.util.Optional;
 @Repository
 public interface PosStoreRepository extends JpaRepository<PosStore, Long> {
     List<PosStore> findAllByActiveTrueOrderByNameAsc();
-
-    // Tìm store theo tên (dùng cho export superadmin khi chỉ có storeName)
-    List<PosStore> findByNameContainingIgnoreCase(String name);
-
-    // Tìm chính xác theo tên (optional)
-    Optional<PosStore> findByNameIgnoreCase(String name);
 }
 

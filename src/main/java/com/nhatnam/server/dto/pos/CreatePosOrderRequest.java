@@ -24,6 +24,7 @@ public class CreatePosOrderRequest {
 
     private BigDecimal appDiscountAmount;   // Số tiền giảm (nếu user nhập mode 1)
     private BigDecimal appFinalAmount;      // Giá cuối (nếu user nhập mode 2)
+    private BigDecimal manualDiscountAmount;
 
     @NotNull
     @Size(min = 1)

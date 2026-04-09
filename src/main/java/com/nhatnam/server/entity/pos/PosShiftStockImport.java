@@ -16,9 +16,21 @@ public class PosShiftStockImport {
     @JoinColumn(name = "shift_id", nullable = false)
     private PosShift shift;
 
-    @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "ingredient_id", nullable = false)
-    private PosIngredient ingredient;
+    // ── Snapshot thay vì liên kết trực tiếp ──
+    @Column(name = "ingredient_id", nullable = true)
+    private Long ingredientId;
+
+    @Column(name = "ingredient_name", nullable = false, length = 255)
+    private String ingredientName;
+
+    @Column(name = "ingredient_type_name", nullable = false, length = 255)
+    private String ingredientTypeName;
+
+    @Column(name = "unit", length = 50)
+    private String unit;
+
+    @Column(name = "unit_per_pack")
+    private Integer unitPerPack;
 
     @Column(name = "pack_qty", nullable = false)
     private Integer packQty;

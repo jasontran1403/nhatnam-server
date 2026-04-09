@@ -41,7 +41,6 @@ public class PosUserStoreDataInitializer implements CommandLineRunner {
 
     private void seed(Long userId, Long storeId) {
         if (posUserStoreRepository.existsByUserId(userId)) {
-            log.info("[PosUserStore] User {} already mapped, skip", userId);
             return;
         }
 
@@ -60,7 +59,5 @@ public class PosUserStoreDataInitializer implements CommandLineRunner {
         posUserStoreRepository.save(
                 PosUserStore.builder().user(user).store(store).build()
         );
-        log.info("[PosUserStore] Mapped user={} ({}) → store={} ({})",
-                userId, user.getUsername(), storeId, store.getName());
     }
 }

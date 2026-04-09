@@ -143,9 +143,6 @@ public class ProductServiceImpl implements ProductService {
                 .build();
 
         product = productRepository.save(product);
-        log.info("✅ Created product '{}' category='{}' basePrice={} VAT={}%",
-                product.getName(), categoryName,
-                product.getBasePrice(), request.getVatRate());
 
         // ── Tiers ─────────────────────────────────────────────────
         if (request.getTiers() != null && !request.getTiers().isEmpty()) {
@@ -306,7 +303,6 @@ public class ProductServiceImpl implements ProductService {
         product.setIsActive(false);
         product.setUpdatedAt(System.currentTimeMillis());
         productRepository.save(product);
-        log.info("Soft-deleted product: {} (ID: {})", product.getName(), product.getId());
     }
 
     @Override
@@ -368,7 +364,6 @@ public class ProductServiceImpl implements ProductService {
                 .orElseThrow(() -> new RuntimeException("Variant not found"));
         v.setIsActive(false);
         variantRepository.save(v);
-        log.info("Soft-deleted variant {} (ID: {})", v.getVariantName(), v.getId());
     }
 
 

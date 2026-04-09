@@ -16,6 +16,6 @@ public interface VariantIngredientRepository extends JpaRepository<VariantIngred
     @Modifying
     @Transactional
     @Query("DELETE FROM VariantIngredient vi WHERE vi.variant.id = :variantId")
-    int deleteByVariantId(Long variantId);
+    void deleteByVariantId(Long variantId);
 
 }

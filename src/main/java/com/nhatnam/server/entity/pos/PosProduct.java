@@ -53,7 +53,7 @@ public class PosProduct {
     private Long storeId;
 
     @ManyToOne(fetch = FetchType.LAZY)
-    @JoinColumn(name = "category_id", nullable = false)
+    @JoinColumn(name = "category_id", nullable = true)
     @ToString.Exclude @EqualsAndHashCode.Exclude
     private PosCategory category;
 

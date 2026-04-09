@@ -24,13 +24,13 @@ public class NhatNamApplication {
 	@Scheduled(cron = "0 */10 * * * *")
 	@Transactional
 	public void handleDepositJob() {
-		log.info("[CRON_EVERY_MINUTE] Starting job at {}", LocalDateTime.now());
+//		log.info("[CRON_EVERY_MINUTE] Starting job at {}", LocalDateTime.now());
 	}
 
 
 	@Scheduled(cron = "0 0 7 * * *", zone = "GMT+7")
 	@Transactional
 	public void runAt7amHanoiTime() {
-		log.info("[CRON_AT_7:00_HAN] Starting job at {}", LocalDateTime.now());
+//		log.info("[CRON_AT_7:00_HAN] Starting job at {}", LocalDateTime.now());
 	}
 }

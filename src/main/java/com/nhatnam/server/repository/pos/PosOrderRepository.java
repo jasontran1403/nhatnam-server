@@ -10,8 +10,6 @@ import org.springframework.data.repository.query.Param;
 import java.util.List;
 import java.util.Optional;
 
-// Lưu ý: PosOrderRepository cần extend thêm custom methods.
-// Tách PosOrderItemRepository và PosOrderItemIngredientRepository riêng nếu cần.
 public interface PosOrderRepository extends JpaRepository<PosOrder, Long> {
     @Query("""
         SELECT o.customerPhone, SUM(o.finalAmount)
@@ -25,48 +23,7 @@ public interface PosOrderRepository extends JpaRepository<PosOrder, Long> {
             @Param("from") Long from, @Param("to") Long to);
 
     List<PosOrder> findByShiftOrderByCreatedAtDesc(PosShift shift);
-    long countByOrderCodeStartingWith(String prefix);
-
-    // Custom save methods — implement via @Repository + EntityManager, hoặc tách ra service
-    default PosOrderItem saveItem(PosOrderItem item) {
-        throw new UnsupportedOperationException("Inject PosOrderItemRepository separately");
-    }
-    default void saveIngredients(List<PosOrderItemIngredient> list) {
-        throw new UnsupportedOperationException("Inject PosOrderItemIngredientRepository separately");
-    }
 
     @Query("SELECT MAX(o.orderCode) FROM PosOrder o WHERE o.orderCode LIKE :prefix%")
     Optional<String> findMaxOrderCodeByPrefix(@Param("prefix") String prefix);
-
-    @Query("""
-        SELECT o FROM PosOrder o
-        LEFT JOIN FETCH o.shift s
-        LEFT JOIN FETCH o.items i
-        WHERE o.store.id = :storeId
-          AND o.createdAt BETWEEN :fromMs AND :toMs
-          AND o.status = 'COMPLETED'
-        ORDER BY s.openTime ASC, o.createdAt ASC
-    """)
-    List<PosOrder> findByStoreIdAndCreatedAtBetweenOrderByCreatedAtAsc(
-            @Param("storeId") Long storeId,
-            @Param("fromMs")  Long fromMs,
-            @Param("toMs")    Long toMs);
-
-    // ── Export: all stores + time range (superadmin) ──────────────
-    @Query("""
-        SELECT o FROM PosOrder o
-        LEFT JOIN FETCH o.shift s
-        LEFT JOIN FETCH o.items i
-        WHERE o.createdAt BETWEEN :fromMs AND :toMs
-          AND o.status = 'COMPLETED'
-        ORDER BY s.openTime ASC, o.createdAt ASC
-    """)
-    List<PosOrder> findByCreatedAtBetweenOrderByCreatedAtAsc(
-            @Param("fromMs") Long fromMs,
-            @Param("toMs")   Long toMs);
-
-    @Query("SELECT oii FROM PosOrderItemIngredient oii " +
-        "WHERE oii.orderItem.order.shift.id = :shiftId " +
-        "AND oii.orderItem.order.status != com.nhatnam.server.enumtype.PosOrderStatus.CANCELLED")
-    List<PosOrderItemIngredient> findByShiftId(@Param("shiftId") Long shiftId);
 }

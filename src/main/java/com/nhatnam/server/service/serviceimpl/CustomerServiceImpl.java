@@ -61,8 +61,6 @@ public class CustomerServiceImpl implements CustomerService {
         }
 
         Customer savedCustomer = customerRepository.save(customer);
-        log.info("✅ Created customer: {} (ID: {}, Phone: {})",
-                savedCustomer.getName(), savedCustomer.getId(), savedCustomer.getPhone());
 
         return mapToResponse(savedCustomer);
     }
@@ -98,8 +96,6 @@ public class CustomerServiceImpl implements CustomerService {
         }
 
         Customer updatedCustomer = customerRepository.save(customer);
-        log.info("✅ Updated customer: {} (ID: {}, Phone: {})",
-                updatedCustomer.getName(), updatedCustomer.getId(), updatedCustomer.getPhone());
 
         return mapToResponse(updatedCustomer);
     }
@@ -119,7 +115,6 @@ public class CustomerServiceImpl implements CustomerService {
         }
 
         customerRepository.save(customer);
-        log.info("✅ Deleted (soft) customer: {} (ID: {})", customer.getName(), customer.getId());
     }
 
     @Override

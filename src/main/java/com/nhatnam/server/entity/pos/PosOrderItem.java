@@ -33,6 +33,9 @@ public class PosOrderItem {
     @Column(name = "base_price", nullable = false, precision = 10, scale = 2)
     private BigDecimal basePrice;
 
+    @Column(name = "default_price", nullable = false, precision = 10, scale = 2)
+    private BigDecimal defaultPrice;
+
     // 0 / 10 / 20 / 100 (%) hoặc -1 nếu app order
     @Column(name = "discount_percent", nullable = false)
     private Integer discountPercent;

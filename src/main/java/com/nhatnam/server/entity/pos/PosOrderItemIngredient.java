@@ -74,6 +74,9 @@ public class PosOrderItemIngredient {
     @Convert(converter = BigDecimalListConverter.class)
     private List<BigDecimal> unitWeights;
 
+    @Column(name = "addon_price_snapshot", precision = 10, scale = 2)
+    private BigDecimal addonPriceSnapshot;
+
     /**
      * Tổng lượng trừ kho = sum(unitWeights) nếu có, hoặc selectedCount × defaultDeductPerUnit.
      * Được tính và persist khi tạo order, không tính lại runtime.

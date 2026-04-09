@@ -10,10 +10,5 @@ import java.util.List;
 
 @Repository
 public interface InventoryLogRepository extends JpaRepository<InventoryLog, Long> {
-    List<InventoryLog> findByIngredientIdOrderByCreatedAtDesc(Long ingredientId);
-    List<InventoryLog> findByOrderIdOrderByCreatedAtDesc(Long orderId);
-
-    // Thêm cho pagination + sort
     Page<InventoryLog> findByIngredientIdOrderByCreatedAtDesc(Long ingredientId, Pageable pageable);
-    Page<InventoryLog> findByOrderIdOrderByCreatedAtDesc(Long orderId, Pageable pageable);
 }

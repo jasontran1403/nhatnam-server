@@ -110,7 +110,6 @@ public class InventoryBatchService {
 
         logRepository.saveAll(logs);
         batch.setLogs(logs);
-        log.info("[BATCH] IMPORT {} — {} items by {}", batchCode, logs.size(), actor.getUsername());
         return batch;
     }
 
@@ -168,7 +167,6 @@ public class InventoryBatchService {
 
         logRepository.saveAll(logs);
         batch.setLogs(logs);
-        log.info("[BATCH] EXPORT {} — {} items by {}", batchCode, logs.size(), actor.getUsername());
         return batch;
     }
 
@@ -222,7 +220,6 @@ public class InventoryBatchService {
 
         logRepository.saveAll(logs);
         batch.setLogs(logs);
-        log.info("[BATCH] ADJUST {} — {} items by {}", batchCode, logs.size(), actor.getUsername());
         return batch;
     }
 

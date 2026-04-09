@@ -38,7 +38,6 @@ public class CategoryServiceImpl implements CategoryService {
                 .updatedAt(now)
                 .build();
         Category saved = categoryRepository.save(category);
-        log.info("✅ Created category: {} (ID: {})", saved.getName(), saved.getId());
         return mapToResponse(saved);
     }
 
@@ -56,7 +55,6 @@ public class CategoryServiceImpl implements CategoryService {
         category.setImageUrl(request.getImageUrl());
         category.setUpdatedAt(System.currentTimeMillis());
         Category updated = categoryRepository.save(category);
-        log.info("✅ Updated category: {} (ID: {})", updated.getName(), id);
         return mapToResponse(updated);
     }
 
@@ -68,7 +66,6 @@ public class CategoryServiceImpl implements CategoryService {
         category.setIsActive(false);
         category.setUpdatedAt(System.currentTimeMillis());
         categoryRepository.save(category);
-        log.info("✅ Deleted category: {} (ID: {})", category.getName(), id);
     }
 
     @Override

@@ -109,11 +109,6 @@ public class SellerController {
             InventoryBatch batch =
                     inventoryBatchService.createImportBatch(req, actor, imageUrl);
 
-            log.info("[SELLER] IMPORT {} — {} items by {}",
-                    batch.getBatchCode(),
-                    batch.getLogs().size(),
-                    actor.getUsername());
-
             return ResponseEntity.ok(ApiResponse.success(
                     toBatchCreateResp(batch),
                     "Nhập kho thành công. Batch: " + batch.getBatchCode()));
@@ -142,11 +137,6 @@ public class SellerController {
             User actor = (User) auth.getPrincipal();
             InventoryBatch batch = inventoryBatchService.createExportBatch(req, actor);
 
-            log.info("[SELLER] EXPORT {} — {} items by {}",
-                    batch.getBatchCode(),
-                    batch.getLogs().size(),
-                    actor.getUsername());
-
             return ResponseEntity.ok(ApiResponse.success(
                     toBatchCreateResp(batch),
                     "Xuất kho thành công. Batch: " + batch.getBatchCode()));
@@ -170,11 +160,6 @@ public class SellerController {
         try {
             User actor = (User) auth.getPrincipal();
             InventoryBatch batch = inventoryBatchService.createAdjustBatch(req, actor);
-
-            log.info("[SELLER] ADJUST {} — {} items by {}",
-                    batch.getBatchCode(),
-                    batch.getLogs().size(),
-                    actor.getUsername());
 
             return ResponseEntity.ok(ApiResponse.success(
                     toBatchCreateResp(batch),
@@ -259,13 +244,10 @@ public class SellerController {
         }
     }
 
-    // ── Tạo mới B2B customer ──────────────────────────────────────
-    // POST /api/seller/customers/b2b
     @PostMapping("/customers/b2b")
     public ResponseEntity<ApiResponse<Map<String, Object>>> createB2bCustomer(
-            @RequestBody Map<String, Object> req) {
+            @RequestBody Map<String, Object> req)   {
         try {
-            // Validate bắt buộc
             String code = _str(req, "customerCode");
             if (code == null || code.isBlank())
                 throw new IllegalArgumentException("Thiếu mã khách hàng (customerCode)");
@@ -274,12 +256,27 @@ public class SellerController {
             if (customerRepository.findByCustomerCode(upperCode).isPresent())
                 throw new IllegalArgumentException("Mã KH đã tồn tại: " + upperCode);
 
+            // ── Validate trùng phone ──────────────────────────────
+            String phone = _str(req, "phone");
+            if (phone != null && !phone.isBlank()
+                    && customerRepository.findByPhone(phone.trim()).isPresent()) {
+                throw new IllegalArgumentException("Số điện thoại đã tồn tại");
+            }
+
+            // ── Validate trùng taxCode ────────────────────────────
+            String taxCode = _str(req, "taxCode");
+            if (taxCode != null && !taxCode.isBlank()
+                    && customerRepository.findByTaxCode(taxCode.trim()).isPresent()) {
+                throw new IllegalArgumentException("Mã số thuế đã tồn tại");
+            }
+            // ─────────────────────────────────────────────────────
+
             Customer c = new Customer();
             c.setCustomerCode(upperCode);
             _applyB2bFields(req, c, true);
             c = customerRepository.save(c);
-            log.info("[SELLER] B2B customer created: {}", c.getCustomerCode());
             return ResponseEntity.ok(ApiResponse.success(_toB2bMap(c), "Tạo thành công"));
+
         } catch (IllegalArgumentException e) {
             return ResponseEntity.ok(ApiResponse.error(StatusCode.BAD_REQUEST, e.getMessage()));
         } catch (Exception e) {
@@ -288,8 +285,6 @@ public class SellerController {
         }
     }
 
-    // ── Cập nhật B2B customer ─────────────────────────────────────
-    // PUT /api/seller/customers/b2b/{id}
     @PutMapping("/customers/b2b/{id}")
     public ResponseEntity<ApiResponse<Map<String, Object>>> updateB2bCustomer(
             @PathVariable Long id,
@@ -300,15 +295,12 @@ public class SellerController {
             // Không cho đổi customerCode khi update
             _applyB2bFields(req, c, false);
             c = customerRepository.save(c);
-            log.info("[SELLER] B2B customer updated: {}", c.getCustomerCode());
             return ResponseEntity.ok(ApiResponse.success(_toB2bMap(c), "Cập nhật thành công"));
         } catch (RuntimeException e) {
             return ResponseEntity.ok(ApiResponse.error(StatusCode.BAD_REQUEST, e.getMessage()));
         }
     }
 
-    // ── Tìm theo code (autocomplete khi tạo đơn) ─────────────────
-    // GET /api/seller/customers/b2b/search?code=NOK
     @GetMapping("/customers/b2b/search")
     public ResponseEntity<ApiResponse<List<Map<String, Object>>>> searchB2bByCode(
             @RequestParam String code) {
@@ -377,31 +369,42 @@ public class SellerController {
     }
 
     private Map<String, Object> _toB2bMap(Customer c) {
-        log.info("[B2B] id={} code={} companyPhone={} companyAddress={}",
-                c.getId(), c.getCustomerCode(),
-                c.getCompanyPhone(), c.getCompanyAddress());
-
-
         Map<String, Object> m = new LinkedHashMap<>();
-        m.put("id",              c.getId());
-        m.put("customerCode",    c.getCustomerCode());
-        m.put("customerType",    c.getCustomerType() != null
+
+        m.put("id",           c.getId());
+        m.put("customerType", c.getCustomerType() != null
                 ? c.getCustomerType().name() : "RETAIL");
-        m.put("companyName",     c.getCompanyName());
-        m.put("shortName",       c.getShortName());
+        m.put("isActive",     c.getIsActive() != null ? c.getIsActive() : true);
+        m.put("discountRate", c.getDiscountRate() != null ? c.getDiscountRate() : 0);
+        m.put("createdAt",    c.getCreatedAt());
+
+        // ── 5 field bắt buộc cho khách lẻ ────────────────────────
+
+        // customerCode: fallback về phone nếu null (khách lẻ thường không có mã)
+        String code = c.getCustomerCode();
+        if (code == null || code.isBlank())
+            code = c.getPhone() != null ? c.getPhone() : "KH#" + c.getId();
+        m.put("customerCode", code);
+
+        // contactName: fallback về name
+        String contact = c.getContactName();
+        if (contact == null || contact.isBlank()) contact = c.getName();
+        m.put("contactName", contact != null ? contact : "");
+
+        m.put("phone",           c.getPhone()           != null ? c.getPhone()           : "");
+        m.put("deliveryAddress", c.getDeliveryAddress() != null ? c.getDeliveryAddress() : "");
+        m.put("dateOfBirth",     c.getDateOfBirth()     != null ? c.getDateOfBirth()     : "");
+
+        // ── Các field còn lại — null cũng được ───────────────────
+        m.put("companyName",    c.getCompanyName());
+        m.put("shortName",      c.getShortName());
+        m.put("taxCode",        c.getTaxCode());
         m.put("companyPhone",   c.getCompanyPhone());
         m.put("companyAddress", c.getCompanyAddress());
-        m.put("taxCode",         c.getTaxCode());
-        m.put("address",         c.getAddress());
-        m.put("deliveryAddress", c.getDeliveryAddress());
-        m.put("contactName",     c.getContactName());
-        m.put("dateOfBirth",     c.getDateOfBirth());
-        m.put("phone",           c.getPhone());
-        m.put("name",            c.getName());
-        m.put("email",           c.getEmail());
-        m.put("discountRate",    c.getDiscountRate());
-        m.put("isActive",        c.getIsActive());
-        m.put("createdAt",       c.getCreatedAt());
+        m.put("address",        c.getAddress());
+        m.put("name",           c.getName());
+        m.put("email",          c.getEmail());
+
         return m;
     }
 
@@ -474,9 +477,6 @@ public class SellerController {
                 );
             });
 
-            log.info("[SELLER] Retrieved {} inventory logs (page {}/{})",
-                    responsePage.getTotalElements(), page + 1, responsePage.getTotalPages());
-
             return ResponseEntity.ok(
                     ApiResponse.success(responsePage, "Inventory logs retrieved successfully")
             );
@@ -493,7 +493,6 @@ public class SellerController {
     public ResponseEntity<ApiResponse<List<CustomerResponse>>> getAllCustomers() {
         try {
             List<CustomerResponse> customers = customerService.getAllActiveCustomers();
-            log.info("✅ Retrieved {} customers", customers.size());
             return ResponseEntity.ok(ApiResponse.success(customers, "Customers retrieved successfully"));
         } catch (Exception e) {
             log.error("❌ Failed to get customers", e);
@@ -515,7 +514,6 @@ public class SellerController {
             Pageable pageable = PageRequest.of(page, size, sort);
             Page<CustomerResponse> result = customerService.searchCustomers(
                     keyword != null ? keyword : "", pageable);
-            log.info("✅ Found {} customers for keyword: '{}'", result.getTotalElements(), keyword);
             return ResponseEntity.ok(ApiResponse.success(result, "Customers retrieved successfully"));
         } catch (Exception e) {
             log.error("❌ Failed to search customers", e);
@@ -529,7 +527,6 @@ public class SellerController {
             @PathVariable String phone) {
         try {
             CustomerResponse customer = customerService.getCustomerByPhone(phone);
-            log.info("✅ Retrieved customer by phone: {}", phone);
             return ResponseEntity.ok(ApiResponse.success(customer, "Customer retrieved successfully"));
         } catch (RuntimeException e) {
             log.warn("❌ Customer not found with phone: {}", phone);
@@ -545,7 +542,6 @@ public class SellerController {
     public ResponseEntity<ApiResponse<CustomerResponse>> getCustomerById(@PathVariable Long id) {
         try {
             CustomerResponse customer = customerService.getCustomerById(id);
-            log.info("✅ Retrieved customer ID: {}", id);
             return ResponseEntity.ok(ApiResponse.success(customer, "Customer retrieved successfully"));
         } catch (RuntimeException e) {
             log.warn("❌ Customer not found ID: {}", id);
@@ -562,8 +558,7 @@ public class SellerController {
             @Valid @RequestBody CreateCustomerRequest request) {
         try {
             CustomerResponse customer = customerService.createCustomer(request);
-            log.info("✅ Created customer: {} (ID: {}, Phone: {})",
-                    customer.getName(), customer.getId(), customer.getPhone());
+
             return ResponseEntity.ok(ApiResponse.success(customer, "Customer created successfully"));
         } catch (IllegalArgumentException e) {
             log.warn("Invalid customer request: {}", e.getMessage());
@@ -584,7 +579,6 @@ public class SellerController {
             @Valid @RequestBody UpdateCustomerRequest request) {
         try {
             CustomerResponse customer = customerService.updateCustomer(id, request);
-            log.info("✅ Updated customer: {} (ID: {})", customer.getName(), id);
             return ResponseEntity.ok(ApiResponse.success(customer, "Customer updated successfully"));
         } catch (IllegalArgumentException e) {
             log.warn("Invalid customer update request: {}", e.getMessage());
@@ -606,7 +600,6 @@ public class SellerController {
     public ResponseEntity<ApiResponse<Object>> deleteCustomer(@PathVariable Long id) {
         try {
             customerService.deleteCustomer(id);
-            log.info("✅ Deleted customer ID: {}", id);
             return ResponseEntity.ok(ApiResponse.success(null, "Customer deleted successfully"));
         } catch (RuntimeException e) {
             log.warn("❌ Customer not found ID: {}", id);
@@ -670,7 +663,6 @@ public class SellerController {
             @Valid @RequestBody CreateCategoryRequest request) {
         try {
             CategoryResponse category = categoryService.createCategory(request);
-            log.info("✅ Created category: {}", category.getName());
             return ResponseEntity.ok(ApiResponse.success(category, "Category created successfully"));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(ApiResponse.error(StatusCode.BAD_REQUEST, e.getMessage()));
@@ -690,7 +682,6 @@ public class SellerController {
             @Valid @RequestBody CreateCategoryRequest request) {
         try {
             CategoryResponse category = categoryService.updateCategory(id, request);
-            log.info("✅ Updated category ID: {}", id);
             return ResponseEntity.ok(ApiResponse.success(category, "Category updated successfully"));
         } catch (IllegalArgumentException e) {
             return ResponseEntity.badRequest().body(ApiResponse.error(StatusCode.BAD_REQUEST, e.getMessage()));
@@ -709,7 +700,6 @@ public class SellerController {
 
         try {
             ProductResponse product = productService.updateProduct(id, request);
-            log.info("✅ Updated product: {} (ID: {})", product.getName(), id);
 
             return ResponseEntity.ok(
                     ApiResponse.success(product, "Product updated successfully")
@@ -745,7 +735,6 @@ public class SellerController {
     public ResponseEntity<ApiResponse<Object>> deleteCategory(@PathVariable Long id) {
         try {
             categoryService.deleteCategory(id);
-            log.info("✅ Deleted category ID: {}", id);
             return ResponseEntity.ok(ApiResponse.success(null, "Category deleted successfully"));
         } catch (RuntimeException e) {
             return ResponseEntity.ok(ApiResponse.error(StatusCode.NOT_FOUND, e.getMessage()));
@@ -997,7 +986,6 @@ public class SellerController {
     public ResponseEntity<ApiResponse<List<IngredientResponse>>> getAllIngredients() {
         try {
             List<IngredientResponse> ingredients = ingredientService.getAllIngredients();
-            log.info("✅ Retrieved {} ingredients", ingredients.size());
             return ResponseEntity.ok(
                     ApiResponse.success(ingredients, "Ingredients retrieved successfully")
             );
@@ -1016,8 +1004,6 @@ public class SellerController {
         try {
             List<IngredientResponse> ingredients =
                     ingredientService.getPaginationIngredients(page, size);
-            log.info("✅ Retrieved {} ingredients (page={}, size={})",
-                    ingredients.size(), page, size);
             return ResponseEntity.ok(
                     ApiResponse.success(ingredients, "Ingredients retrieved successfully")
             );
@@ -1037,7 +1023,6 @@ public class SellerController {
     public ResponseEntity<ApiResponse<IngredientResponse>> getIngredientById(@PathVariable Long id) {
         try {
             IngredientResponse ingredient = ingredientService.getIngredientById(id);
-            log.info("✅ Retrieved ingredient: {} (ID: {})", ingredient.getName(), id);
 
             return ResponseEntity.ok(
                     ApiResponse.success(ingredient, "Ingredient retrieved successfully")
@@ -1065,7 +1050,6 @@ public class SellerController {
 
         try {
             IngredientResponse ingredient = ingredientService.createIngredient(request);
-            log.info("✅ Created ingredient: {} (ID: {})", ingredient.getName(), ingredient.getId());
 
             return ResponseEntity.ok(
                     ApiResponse.success(ingredient, "Ingredient created successfully")
@@ -1089,7 +1073,6 @@ public class SellerController {
 
         try {
             IngredientResponse ingredient = ingredientService.updateIngredient(id, request);
-            log.info("✅ Updated ingredient: {} (ID: {})", ingredient.getName(), id);
 
             return ResponseEntity.ok(
                     ApiResponse.success(ingredient, "Ingredient updated successfully")
@@ -1145,7 +1128,6 @@ public class SellerController {
             @Valid @RequestBody CreateCompleteProductRequest request) {
         try {
             ProductResponse product = productService.createCompleteProduct(request);
-            log.info("✅ Created complete product: {} (ID: {})", product.getName(), product.getId());
 
             return ResponseEntity.ok(
                     ApiResponse.success(product, "Product created successfully")
@@ -1182,13 +1164,10 @@ public class SellerController {
             if (imageUrl != null && !imageUrl.isEmpty()) {
                 try {
                     fileStorageService.deleteFile(imageUrl);
-                    log.info("✅ Product image deleted: {}", imageUrl);
                 } catch (IOException e) {
                     log.warn("⚠️ Failed to delete product image: {}", imageUrl);
                 }
             }
-
-            log.info("✅ Product deleted: {} (ID: {})", product.getName(), id);
 
             return ResponseEntity.ok(
                     ApiResponse.success(null, "Product deleted successfully")
@@ -1227,7 +1206,6 @@ public class SellerController {
             String imageUrl = null;
             if (image != null && !image.isEmpty()) {
                 imageUrl = fileStorageService.saveVariantImage(image);
-                log.info("✅ Variant image uploaded: {}", imageUrl);
             }
 
             // Tạo request (cần parse ingredientsJson nếu có)
@@ -1241,8 +1219,6 @@ public class SellerController {
 
             // Thêm variant
             ProductResponse product = productService.addVariant(request);
-
-            log.info("✅ Variant added: {} to product ID: {}", variantName, productId);
 
             return ResponseEntity.ok(
                     ApiResponse.success(product, "Variant added successfully")
@@ -1280,8 +1256,6 @@ public class SellerController {
 
             // Xóa variant
             productService.deleteVariant(variantId);
-
-            log.info("✅ Variant deleted ID: {}", variantId);
 
             return ResponseEntity.ok(
                     ApiResponse.success(null, "Variant deleted successfully")
@@ -1342,9 +1316,6 @@ public class SellerController {
             data.put("totalPages", (int) Math.ceil((double) products.size() / size));
             data.put("pageSize", size);
 
-            log.info("[SELLER] Retrieved {} products (page {}/{})",
-                    pageContent.size(), page + 1, data.get("totalPages"));
-
             return ResponseEntity.ok(
                     ApiResponse.success(data, "Products retrieved successfully")
             );
@@ -1364,7 +1335,6 @@ public class SellerController {
     public ResponseEntity<ApiResponse<ProductResponse>> getProductDetail(@PathVariable Long id) {
         try {
             ProductResponse product = productService.getProductById(id);
-            log.info("[SELLER] Retrieved product detail: {} (ID: {})", product.getName(), id);
             return ResponseEntity.ok(
                     ApiResponse.success(product, "Product detail retrieved successfully")
             );
@@ -1392,7 +1362,6 @@ public class SellerController {
             ProductResponse product = productService.getProductById(id);
             List<ProductResponse.VariantResponse> variants = product.getVariants();
 
-            log.info("[SELLER] Retrieved {} variants for product ID: {}", variants.size(), id);
             return ResponseEntity.ok(
                     ApiResponse.success(variants, "Variants retrieved successfully")
             );
@@ -1421,8 +1390,7 @@ public class SellerController {
             ProductResponse product = productService.getProductById(id);
             List<ProductResponse.PriceResponse> prices = product.getPrices();
 
-            log.info("[SELLER] Retrieved {} prices for product ID: {} (variantId: {})",
-                    prices.size(), id, variantId);
+
             return ResponseEntity.ok(
                     ApiResponse.success(prices, "Prices retrieved successfully")
             );
@@ -1460,8 +1428,6 @@ public class SellerController {
         User user = (User) authentication.getPrincipal();
         Long userId = user.getId();
 
-        log.info("[SELLER] Order creation request from user: {} (ID: {})",
-                user.getUsername(), userId);
 
         // Lấy lock để tránh tạo nhiều đơn hàng cùng lúc
         ReentrantLock lock = transactionLockManager.getLock(userId);
@@ -1477,9 +1443,9 @@ public class SellerController {
         }
 
         try {
+
             OrderResponse order = orderService.createOrder(request, userId);
-            log.info("[SELLER] ✅ Order created: {} (Total: {}đ)",
-                    order.getOrderCode(), order.getFinalAmount());
+
 
             return ResponseEntity.ok(
                     ApiResponse.success(order, "Order created successfully")
@@ -1512,7 +1478,6 @@ public class SellerController {
         } finally {
             lock.unlock();
             transactionLockManager.cleanupIfUnused(userId);
-            log.info("[SELLER] Lock released for user: {}", userId);
         }
     }
 
@@ -1565,7 +1530,6 @@ public class SellerController {
                 );
             }
 
-            log.info("[SELLER] Retrieved order: {}", order.getOrderCode());
             return ResponseEntity.ok(
                     ApiResponse.success(order, "Order retrieved successfully")
             );
@@ -1593,7 +1557,6 @@ public class SellerController {
             User user = (User) authentication.getPrincipal();
             List<OrderResponse> orders = orderService.getMyOrders(user.getId());
 
-            log.info("[SELLER] Retrieved {} orders for user: {}", orders.size(), user.getUsername());
             return ResponseEntity.ok(
                     ApiResponse.success(orders, "Orders retrieved successfully")
             );
@@ -1617,8 +1580,6 @@ public class SellerController {
             User user = (User) authentication.getPrincipal();
             OrderResponse order = orderService.cancelOrder(orderId, user.getId());
 
-            log.info("[SELLER] Order cancelled: {} by user: {}",
-                    order.getOrderCode(), user.getUsername());
             return ResponseEntity.ok(
                     ApiResponse.success(order, "Order cancelled successfully")
             );
@@ -1656,7 +1617,6 @@ public class SellerController {
         User user = (User) authentication.getPrincipal();
         Long userId = user.getId();
 
-        log.info("[TEST-LOCK] Request from userId: {}, username: {}", userId, user.getUsername());
 
         ReentrantLock lock = transactionLockManager.getLock(userId);
 

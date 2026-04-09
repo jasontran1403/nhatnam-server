@@ -97,9 +97,7 @@ public class PosDiscountService {
         if (amount.compareTo(BigDecimal.ZERO) <= 0) return;
         cd.setBudgetUsed(cd.getBudgetUsed().add(amount));
         customerDiscountRepo.save(cd);
-        log.info("[Discount] customer={} budgetUsed={}/{}",
-                cd.getCustomer().getPhone(), cd.getBudgetUsed(),
-                cd.getProgram().getMaxDiscountPerCustomer());
+
     }
 
     // ── Customer chọn option ──────────────────────────────────────
@@ -162,8 +160,7 @@ public class PosDiscountService {
                                     .qualifiedAt(now)
                                     .build();
                             customerDiscountRepo.save(cd);
-                            log.info("[Discount] Qualified: phone={} program={}",
-                                    phone, program.getName());
+
                             return cd;
                         });
             });

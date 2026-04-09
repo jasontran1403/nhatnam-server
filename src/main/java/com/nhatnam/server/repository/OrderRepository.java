@@ -21,8 +21,6 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
 
     List<Order> findByStatusOrderByCreatedAtDesc(OrderStatus status);
 
-    List<Order> findByCreatedAtBetweenOrderByCreatedAtDesc(Long startTime, Long endTime);
-
     @Query("SELECT o FROM Order o " +
             "LEFT JOIN FETCH o.orderItems oi " +
             "LEFT JOIN FETCH oi.orderItemIngredients " +

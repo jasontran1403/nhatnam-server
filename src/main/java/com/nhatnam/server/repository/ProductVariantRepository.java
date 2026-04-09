@@ -17,10 +17,4 @@ public interface ProductVariantRepository extends JpaRepository<ProductVariant, 
 
 
     Optional<ProductVariant> findByIdAndIsActiveTrue(Long id);
-
-    @Query("SELECT v FROM ProductVariant v " +
-            "LEFT JOIN FETCH v.variantIngredients vi " +
-            "LEFT JOIN FETCH vi.ingredient " +
-            "WHERE v.id = :variantId AND v.isActive = true")
-    Optional<ProductVariant> findByIdWithIngredients(@Param("variantId") Long variantId);
 }

@@ -15,10 +15,9 @@ public class PosVariantIngredient {
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "variant_id", nullable = false)
-    @ToString.Exclude @EqualsAndHashCode.Exclude
     private PosVariant variant;
 
-    @ManyToOne(fetch = FetchType.EAGER)
+    @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "ingredient_id", nullable = false)
     private PosIngredient ingredient;
 

@@ -47,6 +47,9 @@ public class PosOrder {
     @Column(name = "total_amount", nullable = false, precision = 10, scale = 2)
     private BigDecimal totalAmount;
 
+    @Column(name = "total_vat_amount", nullable = false, precision = 10, scale = 2)
+    private BigDecimal totalVatAmount;
+
     @Column(precision = 12, scale = 2) @Builder.Default
     private BigDecimal discountAmount = BigDecimal.ZERO;
 

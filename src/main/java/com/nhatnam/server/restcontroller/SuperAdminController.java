@@ -12,14 +12,15 @@ import com.nhatnam.server.repository.pos.PosStoreRepository;
 import com.nhatnam.server.service.PosCustomerService;
 import com.nhatnam.server.service.serviceimpl.DashboardService;
 import com.nhatnam.server.utils.PosOrderExportService;
+import com.nhatnam.server.utils.SellerOrderExportService;
 import com.nhatnam.server.utils.TelegramService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.log4j.Log4j2;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
-import java.time.*;
-import java.util.LinkedHashMap;
+        import java.time.*;
+        import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CompletableFuture;
@@ -332,20 +333,19 @@ public class SuperAdminController {
     @GetMapping("/dashboard/restaurant")
     public ResponseEntity<ApiResponse<DashboardDto.RestaurantDashboard>> getRestaurantDashboard(
             @RequestParam(defaultValue = "30DAYS") String period,
-            @RequestParam(required = false)        Long   fromTs,
-            @RequestParam(required = false)        Long   toTs,
-            @RequestParam(required = false)        String gran,
-            @RequestParam(required = false)        String mode
+            @RequestParam(required = false) Long   fromTs,
+            @RequestParam(required = false) Long   toTs,
+            @RequestParam(required = false) String gran,
+            @RequestParam(required = false) String mode
     ) {
         try {
-            DashboardDto.DateRangeFilter filter      = buildFilter(period, fromTs, toTs);
+            DashboardDto.DateRangeFilter filter = buildFilter(period, fromTs, toTs);
             String granularity = gran != null ? gran : defaultGranularity(period, fromTs, toTs);
 
             DashboardDto.RestaurantDashboard data =
-                    dashboardService.getRestaurantDashboard(filter, granularity);
+                    dashboardService.getRestaurantDashboard(filter, granularity, mode); // ← thêm mode
 
             return ResponseEntity.ok(ApiResponse.success(data, "Dashboard loaded"));
-
         } catch (Exception e) {
             log.error("Dashboard error", e);
             return ResponseEntity.internalServerError()
@@ -650,5 +650,41 @@ public class SuperAdminController {
                     today.atTime(0,0,1).atZone(VN_ZONE).toInstant().toEpochMilli(),
                     today.atTime(23,59,59).atZone(VN_ZONE).toInstant().toEpochMilli()};
         };
+    }
+
+    private final SellerOrderExportService sellerOrderExportService;
+
+    @GetMapping("/dashboard/restaurant/export")
+    public ResponseEntity<ApiResponse<String>> exportRestaurantOrders(
+            @RequestParam(defaultValue = "30DAYS") String period,
+            @RequestParam(required = false) Long   fromTs,
+            @RequestParam(required = false) Long   toTs,
+            @RequestParam(required = false) String mode
+    ) {
+        final long[] range = resolveTimeRange(period, fromTs, toTs);
+
+        final LocalDate from = Instant.ofEpochMilli(range[0]).atZone(VN_ZONE).toLocalDate();
+        final LocalDate to   = Instant.ofEpochMilli(range[1]).atZone(VN_ZONE).toLocalDate();
+        final String modeLabel = "wholesale".equalsIgnoreCase(mode) ? "Sỉ" : "Lẻ";
+        final String caption = String.format(
+                "📊 Báo cáo đơn hàng %s từ %s đến %s", modeLabel,
+                from.format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy")),
+                to.format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy")));
+
+        final String finalMode = mode;
+        CompletableFuture.runAsync(() -> {
+            try {
+                byte[] excel = sellerOrderExportService
+                        .exportRestaurantOrders(range[0], range[1], finalMode);
+                String filename = "seller_orders_" + LocalDate.now(VN_ZONE) + ".xlsx";
+                telegramService.sendDocumentByGroupName(
+                        "seller", excel, filename, caption, null);
+            } catch (Exception e) {
+                log.error("[SELLER] exportRestaurantOrders async error", e);
+            }
+        });
+
+        return ResponseEntity.ok(ApiResponse.success(
+                "Đang tạo báo cáo...", "Báo cáo sẽ được gửi vào Telegram"));
     }
 }

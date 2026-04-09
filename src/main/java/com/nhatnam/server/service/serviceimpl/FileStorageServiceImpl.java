@@ -110,11 +110,7 @@ public class FileStorageServiceImpl implements FileStorageService {
         if (!ImageIO.write(resized, "png", target.toFile()))
             throw new IOException("Failed to write receipt image");
 
-        log.info("✅ [seller-import] receipt saved → {} | original={}×{} resized={}×{} ({}KB original)",
-                filename,
-                original.getWidth(), original.getHeight(),
-                resized.getWidth(), resized.getHeight(),
-                file.getSize() / 1024);
+
 
         return "/images/seller-import/" + filename;
     }
@@ -273,7 +269,6 @@ public class FileStorageServiceImpl implements FileStorageService {
         }
         if (Files.exists(path)) {
             Files.delete(path);
-            log.info("✅ Deleted: {}", filePath);
         } else {
             log.warn("⚠️ File not found: {}", filePath);
         }

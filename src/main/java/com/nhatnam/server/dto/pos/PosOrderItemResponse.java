@@ -11,6 +11,7 @@ public class PosOrderItemResponse {
     private String     productName;
     private String     productImageUrl;
     private BigDecimal basePrice;
+    private BigDecimal defaultPrice;
     private Integer    discountPercent;
     private Integer    vatPercent;        // VAT %
     private BigDecimal vatAmount;         // Số tiền VAT = finalUnitPrice × qty × vatPercent/100

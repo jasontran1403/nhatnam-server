@@ -10,10 +10,8 @@ import java.util.Optional;
 public interface PosVariantIngredientRepository extends JpaRepository<PosVariantIngredient, Long> {
     List<PosVariantIngredient> findByVariant(PosVariant variant);
 
-    // Tìm 1 ingredient cụ thể trong variant (dùng để validate)
-    Optional<PosVariantIngredient> findByVariantAndIngredient(PosVariant variant, PosIngredient ingredient);
+    void deleteByIngredientId(Long ingredientId);
 
-    // Xóa toàn bộ ingredients của variant (dùng khi update)
     @Modifying
     void deleteByVariant(PosVariant variant);
 }
