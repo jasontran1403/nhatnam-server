@@ -703,8 +703,22 @@ public class DashboardService {
                     .setParameter("from", from).setParameter("to", to)
                     .setParameter("storeId", storeId).getResultList();
 
+            // ← THÊM: query item count cho cat filter
+            List<Object[]> itemRows = em.createQuery(
+                            "SELECT po.createdAt, COALESCE(SUM(poi.quantity), 0) " +
+                                    "FROM PosOrderItem poi JOIN poi.order po " +
+                                    "WHERE " + catCondition +
+                                    "  AND (:from IS NULL OR po.createdAt >= :from) " +
+                                    "  AND (:to IS NULL OR po.createdAt <= :to) " +
+                                    "  AND (:storeId IS NULL OR po.store.id = :storeId) " +
+                                    "GROUP BY po.createdAt ORDER BY po.createdAt ASC", Object[].class)
+                    .setParameter("from", from).setParameter("to", to)
+                    .setParameter("storeId", storeId).getResultList();
+
             Map<String, long[]>     countMap = new LinkedHashMap<>();
             Map<String, BigDecimal> revMap   = new LinkedHashMap<>();
+            Map<String, Long>       itemMap  = new LinkedHashMap<>(); // ← THÊM
+
             for (Object[] r : countRows) {
                 String bucket = toBucket((Long) r[0], granularity);
                 countMap.merge(bucket, new long[]{(Long) r[1]},
@@ -715,13 +729,21 @@ public class DashboardService {
                 BigDecimal amt    = (BigDecimal) r[1];
                 revMap.merge(bucket, amt != null ? amt : BigDecimal.ZERO, BigDecimal::add);
             }
-            return buildOrdersByTime(countMap, revMap, from, to, granularity);
+            // ← THÊM: aggregate item count theo bucket
+            for (Object[] r : itemRows) {
+                String bucket = toBucket((Long) r[0], granularity);
+                long   qty    = r[1] != null ? ((Number) r[1]).longValue() : 0L;
+                itemMap.merge(bucket, qty, Long::sum);
+            }
+
+            return buildOrdersByTime(countMap, revMap, itemMap, from, to, granularity);
 
         } else {
             String sourceCondition = (filterType == null || filterType.equals("ALL"))
                     ? "" : "AND po.orderSource = :orderSource ";
 
-            var query = em.createQuery(
+            // Query orders (đơn + revenue) — giữ nguyên
+            var orderQuery = em.createQuery(
                             "SELECT po.createdAt, po.finalAmount FROM PosOrder po " +
                                     "WHERE (:from IS NULL OR po.createdAt >= :from) " +
                                     "  AND (:to IS NULL OR po.createdAt <= :to) " +
@@ -729,25 +751,49 @@ public class DashboardService {
                                     sourceCondition + "ORDER BY po.createdAt ASC", Object[].class)
                     .setParameter("from", from).setParameter("to", to)
                     .setParameter("storeId", storeId);
-
-            if (!sourceCondition.isEmpty()) {
-                query.setParameter("orderSource",
+            if (!sourceCondition.isEmpty())
+                orderQuery.setParameter("orderSource",
                         com.nhatnam.server.enumtype.OrderSource.valueOf(filterType));
-            }
+
+            // ← THÊM: query SUM(quantity) theo ngày
+            var itemQuery = em.createQuery(
+                            "SELECT po.createdAt, COALESCE(SUM(poi.quantity), 0) " +
+                                    "FROM PosOrderItem poi JOIN poi.order po " +
+                                    "WHERE (:from IS NULL OR po.createdAt >= :from) " +
+                                    "  AND (:to IS NULL OR po.createdAt <= :to) " +
+                                    "  AND (:storeId IS NULL OR po.store.id = :storeId) " +
+                                    sourceCondition +
+                                    "GROUP BY po.createdAt ORDER BY po.createdAt ASC", Object[].class)
+                    .setParameter("from", from).setParameter("to", to)
+                    .setParameter("storeId", storeId);
+            if (!sourceCondition.isEmpty())
+                itemQuery.setParameter("orderSource",
+                        com.nhatnam.server.enumtype.OrderSource.valueOf(filterType));
 
             Map<String, long[]>     countMap = new LinkedHashMap<>();
             Map<String, BigDecimal> revMap   = new LinkedHashMap<>();
-            for (Object[] r : query.getResultList()) {
+            Map<String, Long>       itemMap  = new LinkedHashMap<>(); // ← THÊM
+
+            for (Object[] r : orderQuery.getResultList()) {
                 String bucket = toBucket((Long) r[0], granularity);
                 countMap.computeIfAbsent(bucket, k -> new long[]{0})[0]++;
                 revMap.merge(bucket, r[1] != null ? (BigDecimal) r[1] : BigDecimal.ZERO, BigDecimal::add);
             }
-            return buildOrdersByTime(countMap, revMap, from, to, granularity);
+            // ← THÊM: aggregate item count
+            for (Object[] r : itemQuery.getResultList()) {
+                String bucket = toBucket((Long) r[0], granularity);
+                long   qty    = r[1] != null ? ((Number) r[1]).longValue() : 0L;
+                itemMap.merge(bucket, qty, Long::sum);
+            }
+
+            return buildOrdersByTime(countMap, revMap, itemMap, from, to, granularity);
         }
     }
 
     private List<PosDashboardDto.PosOrderByTime> buildOrdersByTime(
-            Map<String, long[]> countMap, Map<String, BigDecimal> revMap,
+            Map<String, long[]> countMap,
+            Map<String, BigDecimal> revMap,
+            Map<String, Long> itemMap,         // ← THÊM tham số
             Long from, Long to, String granularity) {
 
         if (from != null && to != null) {
@@ -755,18 +801,23 @@ public class DashboardService {
             for (String b : allBuckets) {
                 countMap.putIfAbsent(b, new long[]{0});
                 revMap.putIfAbsent(b, BigDecimal.ZERO);
+                itemMap.putIfAbsent(b, 0L);   // ← THÊM
             }
             Map<String, long[]>     sorted    = new LinkedHashMap<>();
             Map<String, BigDecimal> sortedRev = new LinkedHashMap<>();
+            Map<String, Long>       sortedItem = new LinkedHashMap<>(); // ← THÊM
             for (String b : allBuckets) {
                 sorted.put(b, countMap.get(b));
                 sortedRev.put(b, revMap.get(b));
+                sortedItem.put(b, itemMap.get(b)); // ← THÊM
             }
-            countMap = sorted; revMap = sortedRev;
+            countMap = sorted; revMap = sortedRev; itemMap = sortedItem;
         }
 
         final Map<String, long[]>     fc = countMap;
         final Map<String, BigDecimal> fr = revMap;
+        final Map<String, Long>       fi = itemMap; // ← THÊM
+
         List<Map.Entry<String, long[]>> entries = new ArrayList<>(fc.entrySet());
         int last = entries.size() - 1;
         while (last >= 0 && entries.get(last).getValue()[0] == 0) last--;
@@ -779,10 +830,15 @@ public class DashboardService {
             BigDecimal aov = cnt > 0
                     ? rev.divide(BigDecimal.valueOf(cnt), 0, java.math.RoundingMode.HALF_UP)
                     : BigDecimal.ZERO;
+            long itemCount = fi.getOrDefault(b, 0L); // ← THÊM
             return PosDashboardDto.PosOrderByTime.builder()
-                    .timeBucket(b).orderCount(cnt).revenue(rev).aov(aov).build();
+                    .timeBucket(b).orderCount(cnt).revenue(rev).aov(aov)
+                    .itemCount(itemCount)  // ← THÊM
+                    .build();
         }).collect(Collectors.toList());
     }
+
+
 
     // ══════════════════════════════════════════════════════════
     // POS — RECENT ORDERS

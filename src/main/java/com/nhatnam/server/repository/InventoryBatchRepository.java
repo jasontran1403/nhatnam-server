@@ -8,9 +8,21 @@ import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.data.jpa.repository.Query;
 import org.springframework.data.repository.query.Param;
 
+import java.util.List;
 import java.util.Optional;
 
 public interface InventoryBatchRepository extends JpaRepository<InventoryBatch, Long> {
+    @Query("""
+    SELECT DISTINCT b FROM InventoryBatch b
+    LEFT JOIN FETCH b.logs l
+    LEFT JOIN FETCH l.ingredient
+    LEFT JOIN FETCH b.createdBy
+    WHERE b.createdAt BETWEEN :fromTs AND :toTs
+    ORDER BY b.createdAt ASC
+""")
+    List<InventoryBatch> findByCreatedAtBetweenWithLogs(
+            @Param("fromTs") long fromTs,
+            @Param("toTs")   long toTs);
 
     /** Tất cả batch, sort createdAt DESC */
     Page<InventoryBatch> findAllByOrderByCreatedAtDesc(Pageable pageable);

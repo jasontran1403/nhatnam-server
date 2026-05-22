@@ -104,6 +104,7 @@ public class PosDashboardDto {
         private long       orderCount;
         private BigDecimal revenue;
         private BigDecimal aov;
+        private long       itemCount;
     }
 
     @Data @Builder @NoArgsConstructor @AllArgsConstructor

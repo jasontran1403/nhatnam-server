@@ -1,6 +1,7 @@
 // entity/pos/PosCustomer.java
 package com.nhatnam.server.entity.pos;
 
+import com.nhatnam.server.enumtype.PosCustomerType;
 import jakarta.persistence.*;
 import lombok.*;
 import java.math.BigDecimal;
@@ -22,6 +23,11 @@ public class PosCustomer {
 
     @Column(name = "store_id", nullable = false)
     private Long storeId;
+
+    @Column(name = "customer_type", length = 20)
+    @Enumerated(EnumType.STRING)
+    @Builder.Default
+    private PosCustomerType customerType = PosCustomerType.KLE;
 
     // ── Thêm mới ──────────────────────────────────────────────────
 

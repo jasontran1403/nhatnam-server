@@ -28,4 +28,7 @@ public class ProductIngredient {
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "ingredient_id", nullable = false)
     private Ingredient ingredient;
+
+    @Column(name = "quantity", nullable = false, precision = 10, scale = 3)
+    private BigDecimal quantity = BigDecimal.ONE;
 }

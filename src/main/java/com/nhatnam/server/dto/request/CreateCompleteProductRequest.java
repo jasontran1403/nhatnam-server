@@ -20,6 +20,8 @@ public class CreateCompleteProductRequest {
     private Long categoryId;   // ← THÊM (nhận từ Flutter)
     private String unit;
 
+    private BigDecimal quantity;
+
     // ── Giá gốc (tier pricing) ────────────────────────────────────
     private BigDecimal basePrice;
 

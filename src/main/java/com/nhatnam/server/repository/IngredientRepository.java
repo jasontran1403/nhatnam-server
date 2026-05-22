@@ -18,5 +18,5 @@ public interface IngredientRepository extends JpaRepository<Ingredient, Long> {
     List<Ingredient> findByIsActiveTrue();
     Optional<Ingredient> findByIdAndIsActiveTrue(Long id);
     List<Ingredient> findByIsActiveTrue(Pageable pageable);
-
+    List<Ingredient> findByIsActiveTrueOrderByNameAsc();
 }

@@ -3,6 +3,8 @@ package com.nhatnam.server.dto.response;
 import lombok.Builder;
 import lombok.Data;
 
+import java.math.BigDecimal;
+
 @Data
 @Builder
 public class InventoryBatchSummaryResponse {
@@ -14,6 +16,7 @@ public class InventoryBatchSummaryResponse {
     private String createdByName;
     private Long   createdAt;
     private int    totalItems;   // số dòng log
+    private BigDecimal totalImportAmount;
 }
 
 

@@ -12,6 +12,7 @@ import java.math.BigDecimal;
 @NoArgsConstructor
 @AllArgsConstructor
 @Builder
+@ToString
 public class PosStore {
 
     @Id
@@ -44,4 +45,8 @@ public class PosStore {
     @Column(name = "grab_rate", precision = 6, scale = 4)
     @Builder.Default
     private BigDecimal grabRate = new BigDecimal("0.2904");
+
+    @Column(name = "referral_rate", precision = 5, scale = 4)
+    @Builder.Default
+    private BigDecimal referralRate = new BigDecimal("0.05");
 }

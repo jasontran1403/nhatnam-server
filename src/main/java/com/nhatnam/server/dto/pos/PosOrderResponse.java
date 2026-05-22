@@ -18,12 +18,14 @@ public class PosOrderResponse {
     private OrderSource orderSource;
     private PosOrderStatus status;
     private String paymentMethod;
-
+    private String appOrderCode;
     private BigDecimal totalAmount;       // raw (trước discount, trước rate)
     private BigDecimal discountAmount;    // KM raw
     private BigDecimal finalAmount;       // net quán nhận = (total - discount) × (1 - rate)
     private BigDecimal totalVat;
     private String note;
+    private String     eVoucherCode;
+    private BigDecimal eVoucherDiscountAmount;
 
     // ── Platform fee snapshot ────────────────────────────────────
     private BigDecimal platformRate;        // 0.3305

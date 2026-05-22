@@ -12,6 +12,7 @@ import java.util.Optional;
 public interface PosProductRepository extends JpaRepository<PosProduct, Long> {
     List<PosProduct> findByCategoryId(Long categoryId);
 
+    List<PosProduct> findByStoreId(Long storeId);
 
     /** Dùng trong PosService — lọc theo store */
     List<PosProduct> findByStoreIdAndIsActiveTrueOrderByDisplayOrderAscNameAsc(Long storeId);

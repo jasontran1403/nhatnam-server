@@ -9,6 +9,6 @@ import java.util.Optional;
 
 @Repository
 public interface PosStoreRepository extends JpaRepository<PosStore, Long> {
-    List<PosStore> findAllByActiveTrueOrderByNameAsc();
+    List<PosStore> findAllByOrderByIdAsc();
 }
 

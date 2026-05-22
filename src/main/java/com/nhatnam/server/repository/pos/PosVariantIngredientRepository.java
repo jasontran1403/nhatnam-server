@@ -14,4 +14,7 @@ public interface PosVariantIngredientRepository extends JpaRepository<PosVariant
 
     @Modifying
     void deleteByVariant(PosVariant variant);
+
+    List<PosVariantIngredient> findByIngredientId(Long ingredientId);
+    int countByVariant(PosVariant variant);                           // đếm sau khi xóa
 }

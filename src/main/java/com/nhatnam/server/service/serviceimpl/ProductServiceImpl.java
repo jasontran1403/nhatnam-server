@@ -123,13 +123,14 @@ public class ProductServiceImpl implements ProductService {
     public ProductResponse createCompleteProduct(CreateCompleteProductRequest request) {
         long now = System.currentTimeMillis();
 
-        // Resolve category: ưu tiên categoryId → lookup tên; fallback dùng string
         String categoryName = resolveCategoryName(request);
 
         Product product = Product.builder()
                 .name(request.getName())
                 .description(request.getDescription())
                 .imageUrl(request.getImageUrl())
+                .unit(request.getUnit() != null && !request.getUnit().isBlank()
+                        ? request.getUnit() : "kg")
                 .isActive(true)
                 .createdAt(now)
                 .updatedAt(now)
@@ -185,19 +186,25 @@ public class ProductServiceImpl implements ProductService {
                     }
                 }
             }
-        } else if (request.getIngredients() != null && !request.getIngredients().isEmpty()) {
+        } else {
+            // Direct ingredients — bắt buộc ít nhất 1
+            if (request.getIngredients() == null || request.getIngredients().isEmpty()) {
+                throw new IllegalArgumentException("Phải cung cấp ít nhất 1 nguyên liệu cho sản phẩm");
+            }
             for (var ii : request.getIngredients()) {
                 Ingredient ing = ingredientRepository.findById(ii.getIngredientId())
                         .orElseThrow(() -> new RuntimeException(
                                 "Ingredient not found: " + ii.getIngredientId()));
+                BigDecimal qty = ii.getQuantity() != null && ii.getQuantity().compareTo(BigDecimal.ZERO) > 0
+                        ? ii.getQuantity() : BigDecimal.ONE;
                 ProductIngredient pi = ProductIngredient.builder()
-                        .product(product).ingredient(ing).build();
+                        .product(product)
+                        .ingredient(ing)
+                        .quantity(qty)
+                        .build();
                 productIngredientRepository.save(pi);
                 product.getProductIngredients().add(pi);
             }
-        } else {
-            throw new IllegalArgumentException(
-                    "Phải cung cấp ít nhất biến thể hoặc nguyên liệu sản phẩm");
         }
 
         return mapToResponse(productRepository.findById(product.getId()).orElseThrow());
@@ -221,6 +228,10 @@ public class ProductServiceImpl implements ProductService {
         if (request.getBasePrice() != null) product.setBasePrice(request.getBasePrice());
         product.setVatRate(VatRate.fromPercentage(request.getVatRate()));
         product.setUpdatedAt(now);
+
+        if (request.getUnit() != null && !request.getUnit().isBlank()) {
+            product.setUnit(request.getUnit());
+        }
 
         String categoryName = resolveCategoryName(request);
         if (categoryName != null && !categoryName.isBlank()) {
@@ -248,21 +259,22 @@ public class ProductServiceImpl implements ProductService {
             }
         }
 
+        // Xóa variants cũ
         List<ProductVariant> oldVariants = variantRepository.findByProductId(product.getId());
-
         for (ProductVariant ov : oldVariants) {
             variantIngredientRepository.deleteByVariantId(ov.getId());
         }
         variantIngredientRepository.flush();
-
         if (!oldVariants.isEmpty()) {
             variantRepository.deleteAllInBatch(oldVariants);
-            variantRepository.flush(); // commit delete
+            variantRepository.flush();
         }
 
-        // Tạo mới variants từ request
+        // Xóa direct ingredients cũ
+        productIngredientRepository.deleteByProductId(product.getId());
+        productIngredientRepository.flush();
+
         if (request.getVariants() != null && !request.getVariants().isEmpty()) {
-            int variantIndex = 0;
             for (var vi : request.getVariants()) {
                 ProductVariant variant = variantRepository.save(ProductVariant.builder()
                         .product(product)
@@ -272,22 +284,33 @@ public class ProductServiceImpl implements ProductService {
                         .createdAt(now)
                         .build());
 
-                // Tạo VariantIngredient nếu request có ingredients cho variant này
                 if (vi.getIngredients() != null && !vi.getIngredients().isEmpty()) {
                     for (var ii : vi.getIngredients()) {
                         Ingredient ing = ingredientRepository.findById(ii.getIngredientId())
-                                .orElseThrow(() -> new RuntimeException("Ingredient not found: " + ii.getIngredientId()));
+                                .orElseThrow(() -> new RuntimeException(
+                                        "Ingredient not found: " + ii.getIngredientId()));
                         variantIngredientRepository.save(VariantIngredient.builder()
-                                .variant(variant)
-                                .ingredient(ing)
-                                .build());
+                                .variant(variant).ingredient(ing).build());
                     }
                 }
+            }
+        } else {
+            // Direct ingredients — bắt buộc ít nhất 1
+            if (request.getIngredients() == null || request.getIngredients().isEmpty()) {
+                throw new IllegalArgumentException("Phải cung cấp ít nhất 1 nguyên liệu cho sản phẩm");
+            }
+            for (var ii : request.getIngredients()) {
+                Ingredient ing = ingredientRepository.findById(ii.getIngredientId())
+                        .orElseThrow(() -> new RuntimeException(
+                                "Ingredient not found: " + ii.getIngredientId()));
+                BigDecimal qty = ii.getQuantity() != null && ii.getQuantity().compareTo(BigDecimal.ZERO) > 0
+                        ? ii.getQuantity() : BigDecimal.ONE;
+                productIngredientRepository.save(ProductIngredient.builder()
+                        .product(product).ingredient(ing).quantity(qty).build());
             }
         }
 
         Product refreshed = productRepository.findById(product.getId()).orElseThrow();
-
         return mapToResponse(refreshed);
     }
 

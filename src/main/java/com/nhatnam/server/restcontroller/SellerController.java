@@ -5,15 +5,13 @@ import com.nhatnam.server.config.TransactionLockManager;
 import com.nhatnam.server.dto.InvoiceDTO;
 import com.nhatnam.server.dto.request.*;
 import com.nhatnam.server.dto.response.*;
-import com.nhatnam.server.entity.Customer;
-import com.nhatnam.server.entity.InventoryBatch;
-import com.nhatnam.server.entity.InventoryLog;
+import com.nhatnam.server.entity.*;
 import com.nhatnam.server.enumtype.InventoryAction;
 import com.nhatnam.server.enumtype.StatusCode;
-import com.nhatnam.server.entity.User;
 import com.nhatnam.server.exception.PriceChangedException;
 import com.nhatnam.server.repository.CustomerRepository;
 import com.nhatnam.server.repository.InventoryLogRepository;
+import com.nhatnam.server.repository.SupplierRepository;
 import com.nhatnam.server.service.*;
 import com.nhatnam.server.service.serviceimpl.InventoryBatchService;
 import com.nhatnam.server.utils.InvoicePdf;
@@ -56,6 +54,65 @@ public class SellerController {
     private final ObjectMapper objectMapper;
     private final CustomerRepository customerRepository;
     private final InventoryBatchService inventoryBatchService;
+    private final SupplierRepository supplierRepository;
+
+    @GetMapping("/suppliers")
+    public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getSuppliers() {
+        try {
+            List<Map<String, Object>> list = supplierRepository
+                    .findByIsActiveTrueOrderByNameAsc()
+                    .stream()
+                    .map(s -> {
+                        Map<String, Object> m = new LinkedHashMap<>();
+                        m.put("id",      s.getId());
+                        m.put("name",    s.getName());
+                        m.put("address", s.getAddress());
+                        m.put("phone",   s.getPhone());
+                        return m;
+                    })
+                    .toList();
+            return ResponseEntity.ok(ApiResponse.success(list, "OK"));
+        } catch (Exception e) {
+            log.error("[SELLER] getSuppliers error", e);
+            return ResponseEntity.ok(
+                    ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
+        }
+    }
+
+    @PostMapping("/suppliers")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> createSupplier(
+            @RequestBody Map<String, Object> req) {
+        try {
+            String name = req.get("name") instanceof String s ? s.trim() : null;
+            if (name == null || name.isBlank())
+                throw new IllegalArgumentException("Tên nhà cung cấp không được để trống");
+
+            Supplier supplier = Supplier.builder()
+                    .name(name)
+                    .address(req.get("address") instanceof String a ? a.trim() : null)
+                    .phone(req.get("phone")   instanceof String p ? p.trim() : null)
+                    .isActive(true)
+                    .createdAt(System.currentTimeMillis())
+                    .build();
+
+            supplier = supplierRepository.save(supplier);
+
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id",      supplier.getId());
+            m.put("name",    supplier.getName());
+            m.put("address", supplier.getAddress());
+            m.put("phone",   supplier.getPhone());
+
+            return ResponseEntity.ok(ApiResponse.success(m, "Tạo nhà cung cấp thành công"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.ok(
+                    ApiResponse.error(StatusCode.BAD_REQUEST, e.getMessage()));
+        } catch (Exception e) {
+            log.error("[SELLER] createSupplier error", e);
+            return ResponseEntity.ok(
+                    ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
+        }
+    }
 
     @GetMapping("/inventory-batches")
     public ResponseEntity<ApiResponse<Page<InventoryBatchSummaryResponse>>> listBatches(
@@ -93,7 +150,8 @@ public class SellerController {
             consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
     public ResponseEntity<ApiResponse<BatchCreateResponse>> importBatch(
             @RequestPart("data") String dataJson,
-            @RequestPart(value = "image", required = false) MultipartFile receiptImage,
+            @RequestPart(value = "images", required = false)
+            List<MultipartFile> receiptImages,   // ← THAY "image" → "images" (List)
             Authentication auth) {
 
         try {
@@ -101,13 +159,18 @@ public class SellerController {
             ManualImportRequest req =
                     objectMapper.readValue(dataJson, ManualImportRequest.class);
 
-            String imageUrl = null;
-            if (receiptImage != null && !receiptImage.isEmpty()) {
-                imageUrl = fileStorageService.saveSellerImportReceiptImage(receiptImage);
+            List<String> imageUrls = new ArrayList<>();
+            if (receiptImages != null) {
+                for (MultipartFile img : receiptImages) {
+                    if (img != null && !img.isEmpty()) {
+                        imageUrls.add(
+                                fileStorageService.saveSellerImportReceiptImage(img));
+                    }
+                }
             }
 
             InventoryBatch batch =
-                    inventoryBatchService.createImportBatch(req, actor, imageUrl);
+                    inventoryBatchService.createImportBatch(req, actor, imageUrls);
 
             return ResponseEntity.ok(ApiResponse.success(
                     toBatchCreateResp(batch),
@@ -744,124 +807,86 @@ public class SellerController {
         }
     }
 
-    private final TelegramService telegramService;
-
     @GetMapping("/orders/{orderId}/invoice")
-    public ResponseEntity<Map<String, Object>> generateInvoice(@PathVariable Long orderId) {
+    public ResponseEntity<?> generateInvoice(@PathVariable Long orderId) {
         try {
-            // 1. Lấy order — nếu không tìm thấy sẽ throw ngay, trả lỗi về UI
             OrderResponse order = orderService.getOrderById(orderId);
 
-            // 2. Build caption ngay lập tức
-            String caption = String.format(
-                    "📄 HÓA ĐƠN ĐƠN HÀNG %s\n" +
-                            "Khách hàng: %s\n" +
-                            "SĐT: %s\n" +
-                            "Tổng tiền: %s đ\n" +
-                            "Thanh toán: %s | %s\n" +
-                            "Ngày tạo: %s",
-                    order.getOrderCode(),
-                    order.getCustomerName()  != null ? order.getCustomerName()  : "Khách lẻ",
-                    order.getCustomerPhone() != null ? order.getCustomerPhone() : "—",
-                    formatCurrency(order.getFinalAmount()),
-                    order.getPaymentMethod()  != null ? order.getPaymentMethod()  : "—",
-                    order.getPaymentStatus(),
-                    formatDate(order.getCreatedAt())
-            );
+            // Build InvoiceDTO
+            InvoiceDTO invoiceDTO = InvoiceDTO.builder()
+                    .orderId(order.getId())
+                    .orderCode(order.getOrderCode())
+                    .customerName(order.getCustomerName())
+                    .customerPhone(order.getCustomerPhone())
+                    .customerEmail(order.getCustomerEmail())
+                    .shippingAddress(order.getShippingAddress())
+                    .notes(order.getNotes())
+                    .totalAmount(order.getTotalAmount())
+                    .discountAmount(order.getDiscountAmount())
+                    .finalAmount(order.getFinalAmount())
+                    .vatAmount(order.getVatAmount())
+                    .status(order.getStatus())
+                    .paymentStatus(order.getPaymentStatus())
+                    .paymentMethod(order.getPaymentMethod())
+                    .createdAt(order.getCreatedAt())
+                    .customerType(order.getCustomerType())
+                    .companyName(order.getCompanyName())
+                    .shortName(order.getShortName())
+                    .taxCode(order.getTaxCode())
+                    .companyPhone(order.getCompanyPhone())
+                    .companyAddress(order.getCompanyAddress())
+                    .contactName(order.getContactName())
+                    .deliveryAddress(order.getDeliveryAddress())
+                    .items(order.getItems().stream()
+                            .map(item -> InvoiceDTO.Item.builder()
+                                    .productName(item.getProductName())
+                                    .variantName(item.getVariantName())
+                                    .priceName(item.getPriceName())
+                                    .unitPrice(item.getUnitPrice())
+                                    .quantity(item.getQuantity())
+                                    .subtotal(item.getSubtotal())
+                                    .unit(item.getUnit())
+                                    .defaultPrice(item.getDefaultPrice())
+                                    .ingredientsUsed(item.getIngredientsUsed().stream()
+                                            .map(ing -> InvoiceDTO.Ingredient.builder()
+                                                    .ingredientName(ing.getIngredientName())
+                                                    .quantityUsed(ing.getQuantityUsed())
+                                                    .unit(ing.getUnit())
+                                                    .build())
+                                            .collect(Collectors.toList()))
+                                    .build())
+                            .collect(Collectors.toList()))
+                    .build();
 
-            // 3. Trả response ngay cho UI
-            Map<String, Object> response = new HashMap<>();
-            response.put("code",      900);
-            response.put("message",   "Đang tạo hóa đơn, sẽ gửi qua Telegram sau giây lát...");
-            response.put("orderId",   orderId);
-            response.put("orderCode", order.getOrderCode());
-            response.put("caption",   caption);
-
-            // 4. Xử lý tạo PDF + gửi Telegram async (không block UI)
-            CompletableFuture.runAsync(() -> {
-                try {
-                    // Build InvoiceDTO
-                    InvoiceDTO invoiceDTO = InvoiceDTO.builder()
-                            .orderId(order.getId())
-                            .orderCode(order.getOrderCode())
-                            .customerName(order.getCustomerName())
-                            .customerPhone(order.getCustomerPhone())
-                            .customerEmail(order.getCustomerEmail())
-                            .shippingAddress(order.getShippingAddress())
-                            .notes(order.getNotes())
-                            .totalAmount(order.getTotalAmount())
-                            .discountAmount(order.getDiscountAmount())
-                            .finalAmount(order.getFinalAmount())
-                            .vatAmount(order.getVatAmount())
-                            .status(order.getStatus())
-                            .paymentStatus(order.getPaymentStatus())
-                            .paymentMethod(order.getPaymentMethod())
-                            .createdAt(order.getCreatedAt())
-                            .customerType(order.getCustomerType())
-                            .companyName(order.getCompanyName())
-                            .shortName(order.getShortName())
-                            .taxCode(order.getTaxCode())
-                            .companyPhone(order.getCompanyPhone())
-                            .companyAddress(order.getCompanyAddress())
-                            .contactName(order.getContactName())
-                            .deliveryAddress(order.getDeliveryAddress())
-                            .items(order.getItems().stream()
-                                    .map(item -> InvoiceDTO.Item.builder()
-                                            .productName(item.getProductName())
-                                            .variantName(item.getVariantName())
-                                            .priceName(item.getPriceName())
-                                            .unitPrice(item.getUnitPrice())
-                                            .quantity(item.getQuantity())
-                                            .subtotal(item.getSubtotal())
-                                            .unit(item.getUnit())
-                                            .defaultPrice(item.getDefaultPrice())
-                                            .ingredientsUsed(item.getIngredientsUsed().stream()
-                                                    .map(ing -> InvoiceDTO.Ingredient.builder()
-                                                            .ingredientName(ing.getIngredientName())
-                                                            .quantityUsed(ing.getQuantityUsed())
-                                                            .unit(ing.getUnit())
-                                                            .build())
-                                                    .collect(Collectors.toList()))
-                                            .build())
-                                    .collect(Collectors.toList()))
-                            .build();
-
-                    // VAT breakdown
-                    Map<Integer, BigDecimal> vatBreakdown = new LinkedHashMap<>();
-                    for (var item : order.getItems()) {
-                        Integer    rate   = item.getVatRate();
-                        BigDecimal amount = item.getVatAmount();
-                        if (rate != null && rate > 0
-                                && amount != null
-                                && amount.compareTo(BigDecimal.ZERO) > 0) {
-                            vatBreakdown.merge(rate, amount, BigDecimal::add);
-                        }
-                    }
-                    invoiceDTO.setVatBreakdown(vatBreakdown);
-
-                    // Generate PDF
-                    byte[] pdfBytes = invoicePdf.GenerateInvoicePdf(invoiceDTO);
-                    String filename = "invoice_" + order.getOrderCode() + ".pdf";
-
-                    // Gửi Telegram
-                    telegramService.sendDocumentByGroupName(
-                            "seller", pdfBytes, filename, caption, null);
-
-                } catch (Exception e) {
-                    log.error("[Invoice] Async error cho order {}: {}", orderId, e.getMessage(), e);
+            // VAT breakdown
+            Map<Integer, BigDecimal> vatBreakdown = new LinkedHashMap<>();
+            for (var item : order.getItems()) {
+                Integer    rate   = item.getVatRate();
+                BigDecimal amount = item.getVatAmount();
+                if (rate != null && rate > 0
+                        && amount != null
+                        && amount.compareTo(BigDecimal.ZERO) > 0) {
+                    vatBreakdown.merge(rate, amount, BigDecimal::add);
                 }
-            });
+            }
+            invoiceDTO.setVatBreakdown(vatBreakdown);
 
-            return ResponseEntity.ok(response);
+            // ← Đồng bộ, trả PDF trực tiếp
+            byte[] pdfBytes = invoicePdf.GenerateInvoicePdf(invoiceDTO);
+            String filename = "invoice_" + order.getOrderCode() + ".pdf";
+
+            return ResponseEntity.ok()
+                    .header("Content-Disposition",
+                            "attachment; filename=\"" + filename + "\"")
+                    .header("Content-Type", "application/pdf")
+                    .body(pdfBytes);
 
         } catch (Exception e) {
-            log.error("Lỗi generate invoice cho order {}: {}", orderId, e.getMessage(), e);
-
-            Map<String, Object> errorResponse = new HashMap<>();
-            errorResponse.put("code",    500);
-            errorResponse.put("message", "Lỗi khi xử lý hóa đơn: " + e.getMessage());
-
-            return ResponseEntity.status(500).body(errorResponse);
+            log.error("Lỗi generate invoice cho order {}: {}",
+                    orderId, e.getMessage(), e);
+            return ResponseEntity.status(500)
+                    .body(ApiResponse.error(500,
+                            "Lỗi khi xử lý hóa đơn: " + e.getMessage()));
         }
     }
 

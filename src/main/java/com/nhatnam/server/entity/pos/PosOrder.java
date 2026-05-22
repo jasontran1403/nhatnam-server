@@ -21,6 +21,9 @@ public class PosOrder {
     @Column(name = "order_code", unique = true, nullable = false)
     private String orderCode;
 
+    @Column(name = "app_order_code", length = 50)
+    private String appOrderCode;
+
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "shift_id", nullable = false)
     @ToString.Exclude @EqualsAndHashCode.Exclude
@@ -38,6 +41,15 @@ public class PosOrder {
     @Enumerated(EnumType.STRING)
     @Column(nullable = false)
     private PosOrderStatus status;
+
+    @Column(name = "evoucher_id")
+    private Long eVoucherId;
+
+    @Column(name = "evoucher_code", length = 32)
+    private String eVoucherCode;
+
+    @Column(name = "evoucher_discount_amount", precision = 14, scale = 2)
+    private BigDecimal eVoucherDiscountAmount;
 
     // ── Amounts ───────────────────────────────────────────────────
     // totalAmount  = tổng giá gốc RAW (trước discount, trước rate)

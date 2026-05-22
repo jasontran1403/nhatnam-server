@@ -8,6 +8,8 @@ import org.springframework.data.repository.query.Param;
 import java.util.List;
 import java.util.Optional;
 public interface PosShiftRepository extends JpaRepository<PosShift, Long> {
+    List<PosShift> findByStoreIdOrderByOpenTimeDesc(Long storeId);
+
     @Query("""
         SELECT s FROM PosShift s
         WHERE s.shiftDate BETWEEN :fromDate AND :toDate

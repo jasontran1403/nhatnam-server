@@ -26,6 +26,12 @@ public class InventoryLog {
     @JoinColumn(name = "order_id")
     private Order order; // NULL nếu không phải bán hàng
 
+    @Column(name = "unit_price", precision = 12, scale = 2)
+    private BigDecimal unitPrice; // giá nhập 1 đơn vị
+
+    @Column(name = "line_amount", precision = 15, scale = 2)
+    private BigDecimal lineAmount; // = unitPrice * quantity
+
     /** FK → InventoryBatch. NULL cho log bán hàng (createOrder). */
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "batch_id")
@@ -37,6 +43,9 @@ public class InventoryLog {
 
     @Column(name = "receipt_image_url", length = 500)
     private String receiptImageUrl;
+
+    @Column(name = "receipt_image_urls", columnDefinition = "TEXT")
+    private String receiptImageUrls;
 
     /** Dương = nhập/dư, Âm = xuất/thiếu, Zero = khớp (ADJUST). */
     @Column(nullable = false, precision = 10, scale = 2)

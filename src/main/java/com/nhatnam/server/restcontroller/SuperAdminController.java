@@ -1,22 +1,33 @@
 package com.nhatnam.server.restcontroller;
 
 import com.nhatnam.server.dto.DashboardDto;
+import com.nhatnam.server.dto.PosChartDto;
 import com.nhatnam.server.dto.PosDashboardDto;
 import com.nhatnam.server.dto.response.ApiResponse;
 import com.nhatnam.server.entity.Customer;
+import com.nhatnam.server.entity.Supplier;
+import com.nhatnam.server.entity.User;
 import com.nhatnam.server.entity.pos.PosCustomer;
 import com.nhatnam.server.entity.pos.PosStore;
+import com.nhatnam.server.enumtype.PosCustomerType;
+import com.nhatnam.server.enumtype.StatusCode;
 import com.nhatnam.server.repository.CustomerRepository;
+import com.nhatnam.server.repository.IngredientRepository;
+import com.nhatnam.server.repository.SupplierRepository;
 import com.nhatnam.server.repository.pos.PosCustomerRepository;
 import com.nhatnam.server.repository.pos.PosStoreRepository;
+import com.nhatnam.server.repository.pos.PosUserStoreRepository;
+import com.nhatnam.server.service.PosChartService;
 import com.nhatnam.server.service.PosCustomerService;
 import com.nhatnam.server.service.serviceimpl.DashboardService;
+import com.nhatnam.server.utils.IngredientReportExport;
 import com.nhatnam.server.utils.PosOrderExportService;
 import com.nhatnam.server.utils.SellerOrderExportService;
 import com.nhatnam.server.utils.TelegramService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.log4j.Log4j2;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 
         import java.time.*;
@@ -33,11 +44,122 @@ public class SuperAdminController {
 
     private final DashboardService    dashboardService;
     private final PosStoreRepository  posStoreRepository;
-    private final PosCustomerRepository posCustomerRepo; // inject thêm
+    private final PosCustomerRepository posCustomerRepo;
     private final PosCustomerService posCustomerService;
-    private final CustomerRepository customerRepository;  // cho B2B
+    private final CustomerRepository customerRepository;
+    private final IngredientReportExport ingredientReportExport;
 
     private static final ZoneId VN_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
+
+    private final SupplierRepository supplierRepository;
+
+    @GetMapping("/suppliers")
+    public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getSuppliers() {
+        try {
+            List<Map<String, Object>> list = supplierRepository
+                    .findByIsActiveTrueOrderByNameAsc()
+                    .stream()
+                    .map(s -> {
+                        Map<String, Object> m = new LinkedHashMap<>();
+                        m.put("id",      s.getId());
+                        m.put("name",    s.getName());
+                        m.put("address", s.getAddress());
+                        m.put("phone",   s.getPhone());
+                        return m;
+                    })
+                    .toList();
+            return ResponseEntity.ok(ApiResponse.success(list, "OK"));
+        } catch (Exception e) {
+            log.error("[SELLER] getSuppliers error", e);
+            return ResponseEntity.ok(
+                    ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
+        }
+    }
+
+    @PostMapping("/suppliers")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> createSupplier(
+            @RequestBody Map<String, Object> req) {
+        try {
+            String name = req.get("name") instanceof String s ? s.trim() : null;
+            if (name == null || name.isBlank())
+                throw new IllegalArgumentException("Tên nhà cung cấp không được để trống");
+
+            Supplier supplier = Supplier.builder()
+                    .name(name)
+                    .address(req.get("address") instanceof String a ? a.trim() : null)
+                    .phone(req.get("phone")   instanceof String p ? p.trim() : null)
+                    .isActive(true)
+                    .createdAt(System.currentTimeMillis())
+                    .build();
+
+            supplier = supplierRepository.save(supplier);
+
+            Map<String, Object> m = new LinkedHashMap<>();
+            m.put("id",      supplier.getId());
+            m.put("name",    supplier.getName());
+            m.put("address", supplier.getAddress());
+            m.put("phone",   supplier.getPhone());
+
+            return ResponseEntity.ok(ApiResponse.success(m, "Tạo nhà cung cấp thành công"));
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.ok(
+                    ApiResponse.error(StatusCode.BAD_REQUEST, e.getMessage()));
+        } catch (Exception e) {
+            log.error("[SELLER] createSupplier error", e);
+            return ResponseEntity.ok(
+                    ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
+        }
+    }
+
+    // ── Thêm vào SuperAdminController ────────────────────────────────
+// Inject thêm IngredientReportExport vào constructor:
+//   private final IngredientReportExport ingredientReportExport;
+
+    @GetMapping("/dashboard/restaurant/export-ingredients")
+    public ResponseEntity<ApiResponse<String>> exportRestaurantIngredients(
+            @RequestParam(defaultValue = "30DAYS") String period,
+            @RequestParam(required = false) Long   fromTs,
+            @RequestParam(required = false) Long   toTs,
+            @RequestParam(required = false) String mode,
+            Authentication auth
+    ) {
+        final long[] range = resolveTimeRange(period, fromTs, toTs);
+        User actor = (User) auth.getPrincipal();
+
+        CompletableFuture.runAsync(() -> {
+            try {
+                log.info("[INGREDIENT-EXPORT] period={} | mode={} | from={} ({}) | to={} ({})",
+                        period, mode,
+                        range[0], Instant.ofEpochMilli(range[0]).atZone(VN_ZONE).toLocalDateTime(),
+                        range[1], Instant.ofEpochMilli(range[1]).atZone(VN_ZONE).toLocalDateTime());
+
+                byte[] excel = ingredientReportExport.export(range[0], range[1]);
+
+                String filename = "bao_cao_kho_"
+                        + LocalDate.now(VN_ZONE) + ".xlsx";
+
+                String fromStr = Instant.ofEpochMilli(range[0])
+                        .atZone(VN_ZONE).toLocalDate()
+                        .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy"));
+                String toStr = Instant.ofEpochMilli(range[1])
+                        .atZone(VN_ZONE).toLocalDate()
+                        .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy"));
+
+                String caption = "📦 Báo cáo Xuất/Nhập/Tồn"
+                        + "\n📅 Từ: " + fromStr + " → " + toStr;
+
+                telegramService.sendDocumentByGroupName(
+                        "seller", excel, filename, caption, null);
+
+            } catch (Exception e) {
+                log.error("[INGREDIENT-EXPORT] async error", e);
+            }
+        });
+
+        return ResponseEntity.ok(ApiResponse.success(
+                "Đang tạo báo cáo nguyên liệu...",
+                "Báo cáo sẽ được gửi vào Telegram"));
+    }
 
     @GetMapping("/pos-customers/{id}")
     public ResponseEntity<ApiResponse<Map<String, Object>>> getPosCustomerById(
@@ -55,24 +177,24 @@ public class SuperAdminController {
     // POST /api/superadmin/pos-customers
     @PostMapping("/pos-customers")
     public ResponseEntity<ApiResponse<Map<String, Object>>> createPosCustomer(
-            @RequestBody Map<String, Object> req) {
+            @RequestBody Map<String, String> req, Authentication auth) {
         try {
-            String phone   = (String) req.get("phone");
-            String name    = (String) req.get("name");
-            Long   storeId = req.get("storeId") != null
-                    ? ((Number) req.get("storeId")).longValue() : null;
+            User user    = (User) auth.getPrincipal();
+            Long storeId = extractStoreId(user.getId());
+
+            String phone = req.get("phone");
+            String name  = req.get("name");
             if (phone == null || phone.isBlank())
-                return ResponseEntity.ok(ApiResponse.error(400, "Thiếu phone"));
+                return ResponseEntity.ok(ApiResponse.error(400, "Thiếu số điện thoại"));
             if (name == null || name.isBlank())
-                return ResponseEntity.ok(ApiResponse.error(400, "Thiếu name"));
-            if (storeId == null)
-                return ResponseEntity.ok(ApiResponse.error(400, "Thiếu storeId"));
+                return ResponseEntity.ok(ApiResponse.error(400, "Thiếu tên"));
 
             PosCustomer c = posCustomerService.createOrUpdate(
                     phone, name, storeId,
-                    (String) req.get("dateOfBirth"),
-                    (String) req.get("deliveryAddress"),
-                    (String) req.get("referredByPhone"));
+                    req.get("dateOfBirth"),
+                    req.get("deliveryAddress"),
+                    req.get("referredByPhone"),
+                    req.get("customerType"));   // ← THÊM
 
             return ResponseEntity.ok(ApiResponse.success(_toPosMap(c), "OK"));
         } catch (Exception e) {
@@ -80,26 +202,56 @@ public class SuperAdminController {
         }
     }
 
-    // ── POS: cập nhật ─────────────────────────────────────────────
-    // PUT /api/superadmin/pos-customers/{id}
+    // AdminController.java — updatePosCustomer
     @PutMapping("/pos-customers/{id}")
     public ResponseEntity<ApiResponse<Map<String, Object>>> updatePosCustomer(
             @PathVariable Long id,
-            @RequestBody Map<String, String> req) {
+            @RequestBody Map<String, String> req,
+            Authentication auth) {
         try {
+            User user    = (User) auth.getPrincipal();
+            Long storeId = extractStoreId(user.getId());
             PosCustomer c = posCustomerRepo.findById(id)
-                    .orElseThrow(() -> new RuntimeException("Không tìm thấy #" + id));
+                    .orElseThrow(() -> new RuntimeException("Không tìm thấy KH #" + id));
+            if (!storeId.equals(c.getStoreId()))
+                throw new RuntimeException("KH không thuộc store của bạn");
+
             if (req.containsKey("name") && req.get("name") != null)
                 c.setName(req.get("name").trim());
             if (req.containsKey("deliveryAddress"))
                 c.setDeliveryAddress(req.get("deliveryAddress"));
             if (req.containsKey("dateOfBirth"))
                 c.setDateOfBirth(req.get("dateOfBirth"));
+
+            // ← THÊM: cho phép update customerType
+            if (req.containsKey("customerType") && req.get("customerType") != null) {
+                try {
+                    c.setCustomerType(PosCustomerType.valueOf(
+                            req.get("customerType").trim()));
+                } catch (IllegalArgumentException ignored) {}
+            }
+
             c = posCustomerRepo.save(c);
             return ResponseEntity.ok(ApiResponse.success(_toPosMap(c), "Cập nhật thành công"));
         } catch (RuntimeException e) {
             return ResponseEntity.ok(ApiResponse.error(400, e.getMessage()));
         }
+    }
+
+    private final PosUserStoreRepository posUserStoreRepository;
+    private Long extractStoreId(Long userId) {
+        return posUserStoreRepository.findByUserId(userId)
+                .orElseThrow(() -> new RuntimeException(
+                        "Tài khoản chưa được gán vào store nào. Vui lòng liên hệ admin."))
+                .getStore().getId();
+    }
+
+    @GetMapping("/customers/types")
+    public ResponseEntity<ApiResponse<List<Map<String, String>>>> getCustomerTypes() {
+        var list = java.util.Arrays.stream(PosCustomerType.values())
+                .map(t -> Map.of("value", t.name(), "label", t.getLabel()))
+                .toList();
+        return ResponseEntity.ok(ApiResponse.success(list, "OK"));
     }
 
     // ── B2B: lấy list (full, tất cả) ─────────────────────────────
@@ -231,7 +383,6 @@ public class SuperAdminController {
     }
 
     private Map<String, Object> _toPosMap(PosCustomer c) {
-        System.out.println(c.getStoreId());
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id",                   c.getId());
         m.put("phone",                c.getPhone());
@@ -240,15 +391,20 @@ public class SuperAdminController {
         m.put("totalSpend",           c.getTotalSpend());
         m.put("storeName",            posStoreRepository.findById(c.getStoreId())
                 .map(PosStore::getName).orElse("Store #" + c.getStoreId()));
-
         m.put("dateOfBirth",          c.getDateOfBirth());
         m.put("deliveryAddress",      c.getDeliveryAddress());
         m.put("referredByCustomerId", c.getReferredByCustomerId());
         m.put("referredByName",       c.getReferredByName());
         m.put("referredByPhone",      c.getReferredByPhone());
         m.put("createdAt",            c.getCreatedAt());
+        // ← THÊM 2 dòng này
+        m.put("customerType",      c.getCustomerType() != null
+                ? c.getCustomerType().name() : "KLE");
+        m.put("customerTypeLabel", c.getCustomerType() != null
+                ? c.getCustomerType().getLabel() : "Khách lẻ");
         return m;
     }
+
 
     private Map<String, Object> _toB2bMap(Customer c) {
         Map<String, Object> m = new LinkedHashMap<>();
@@ -307,6 +463,11 @@ public class SuperAdminController {
                 m.put("referredByName",       c.getReferredByName());
                 m.put("referredByPhone",      c.getReferredByPhone());
                 m.put("createdAt",            c.getCreatedAt());
+                // ← THÊM 2 dòng này
+                m.put("customerType",      c.getCustomerType() != null
+                        ? c.getCustomerType().name() : "KLE");
+                m.put("customerTypeLabel", c.getCustomerType() != null
+                        ? c.getCustomerType().getLabel() : "Khách lẻ");
                 return m;
             }).toList();
 
@@ -319,10 +480,11 @@ public class SuperAdminController {
     @GetMapping("/dashboard/pos/vehicles")
     public ResponseEntity<ApiResponse<List<PosStoreDto>>> getPosVehicles() {
         List<PosStoreDto> list = posStoreRepository
-                .findAllByActiveTrueOrderByNameAsc()
+                .findAllByOrderByIdAsc()
                 .stream()
                 .map(PosStoreDto::from)
                 .toList();
+
         return ResponseEntity.ok(ApiResponse.success(list, "OK"));
     }
 
@@ -686,5 +848,97 @@ public class SuperAdminController {
 
         return ResponseEntity.ok(ApiResponse.success(
                 "Đang tạo báo cáo...", "Báo cáo sẽ được gửi vào Telegram"));
+    }
+
+    private final PosChartService posChartService;
+
+    // GET /api/superadmin/charts/categories?storeId=6
+    @GetMapping("/dashboard/charts/categories")
+    public ResponseEntity<ApiResponse<List<PosChartDto.CategoryItem>>> getChartCategories(
+            @RequestParam Long storeId) {
+        return ResponseEntity.ok(ApiResponse.success(
+                posChartService.getCategories(storeId), "OK"));
+    }
+
+    // GET /api/superadmin/dashboard/charts/period-shift
+    // params: storeId, fromTs, toTs, periodUnit, categories[] (optional)
+    @GetMapping("/dashboard/charts/period-shift")
+    public ResponseEntity<ApiResponse<List<PosChartDto.PeriodShiftPoint>>> getPeriodShift(
+            @RequestParam Long storeId,
+            @RequestParam Long fromTs,
+            @RequestParam Long toTs,
+            @RequestParam(defaultValue = "MONTH_30") String periodUnit,
+            @RequestParam(required = false) List<String> categories) {
+        try {
+            var data = posChartService.getPeriodByShift(storeId, periodUnit, fromTs, toTs, categories);
+            return ResponseEntity.ok(ApiResponse.success(data, "OK"));
+        } catch (Exception e) {
+            log.error("[CHART] getPeriodShift error", e);
+            return ResponseEntity.ok(ApiResponse.error(500, e.getMessage()));
+        }
+    }
+
+    // GET /api/superadmin/dashboard/charts/period-stacked
+    // params: storeId, fromTs, toTs, periodUnit, categories[] (optional)
+    @GetMapping("/dashboard/charts/period-stacked")
+    public ResponseEntity<ApiResponse<List<PosChartDto.PeriodStackedPoint>>> getPeriodStacked(
+            @RequestParam Long storeId,
+            @RequestParam Long fromTs,
+            @RequestParam Long toTs,
+            @RequestParam(defaultValue = "MONTH_30") String periodUnit,
+            @RequestParam(required = false) List<String> categories,
+            Authentication auth) {
+        try {
+            // ← Luôn dùng ShiftStacked, categories chỉ làm filter
+            List<PosChartDto.PeriodStackedPoint> data =
+                    posChartService.getPeriodStackedByShift(
+                            storeId, periodUnit, fromTs, toTs, categories);
+            return ResponseEntity.ok(ApiResponse.success(data, "OK"));
+        } catch (Exception e) {
+            log.error("[CHART] getPeriodStacked error", e);
+            return ResponseEntity.ok(ApiResponse.error(500, e.getMessage()));
+        }
+    }
+
+    // Thêm constant vào class PosChartService (nếu chưa có):
+    private static final ZoneId VN = ZoneId.of("Asia/Ho_Chi_Minh");
+
+    @GetMapping("/dashboard/charts/heatmap")
+    public ResponseEntity<ApiResponse<List<PosChartDto.HeatmapCell>>> getHeatmap(
+            @RequestParam Long storeId,
+            @RequestParam(defaultValue = "60") int periodMinutes,
+            @RequestParam(defaultValue = "0") long fromTs,
+            @RequestParam(defaultValue = "0") long toTs,
+            @RequestParam(required = false) List<Long> productIds) {
+        try {
+            if (periodMinutes != 30 && periodMinutes != 60 && periodMinutes != 120)
+                periodMinutes = 60;
+            if (fromTs == 0) {
+                LocalDate today = LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh"));
+                fromTs = today.minusMonths(1).withDayOfMonth(1)
+                        .atStartOfDay(ZoneId.of("Asia/Ho_Chi_Minh"))
+                        .toInstant().toEpochMilli();
+                toTs = today.withDayOfMonth(today.getMonth().length(today.isLeapYear()))
+                        .plusDays(1).atStartOfDay(ZoneId.of("Asia/Ho_Chi_Minh"))
+                        .toInstant().toEpochMilli() - 1;
+            }
+            var result = posChartService.getHeatmap(storeId, periodMinutes, fromTs, toTs, productIds);
+            return ResponseEntity.ok(ApiResponse.success(result, "OK"));
+        } catch (Exception e) {
+            log.error("[CHART] getHeatmap error", e);
+            return ResponseEntity.ok(ApiResponse.error(500, e.getMessage()));
+        }
+    }
+
+    @GetMapping("/dashboard/charts/products")
+    public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getHeatmapProducts(
+            @RequestParam Long storeId) {
+        try {
+            List<Map<String, Object>> products = posChartService.getProductsForHeatmap(storeId);
+            return ResponseEntity.ok(ApiResponse.success(products, "OK"));
+        } catch (Exception e) {
+            log.error("[CHART] getHeatmapProducts error", e);
+            return ResponseEntity.ok(ApiResponse.error(500, e.getMessage()));
+        }
     }
 }

@@ -18,6 +18,10 @@ public class ManualExportRequest {
 
     private List<ExportItem> items;
 
+    private Long   supplierId;    // FK tới Supplier (optional)
+    private String supplierName;  // snapshot tên NCC
+    private String note;          // lý do xuất kho (đổi tên từ reason)
+
     @Data
     public static class ExportItem {
         private Long ingredientId;

@@ -14,8 +14,10 @@ public class InventoryBatchDetailResponse {
     private String action;
     private String supplierRef;
     private String receiptImageUrl;
+    private List<String> imageUrls;
     private String createdByName;
     private Long   createdAt;
+    private BigDecimal totalImportAmount;
 
     private List<LogLineResponse> lines;
 
@@ -29,6 +31,9 @@ public class InventoryBatchDetailResponse {
         private BigDecimal quantity;
         private BigDecimal quantityBefore;
         private BigDecimal quantityAfter;
+        private BigDecimal unitPrice;
+        private BigDecimal lineAmount;
+
         /**
          * Chỉ dùng cho ADJUST:
          * "MATCH" | "SHORTAGE" | "SURPLUS"

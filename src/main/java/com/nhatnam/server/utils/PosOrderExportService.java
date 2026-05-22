@@ -53,10 +53,12 @@ public class PosOrderExportService {
     private byte[] buildExcel(List<PosOrderExportDto> rows,
                               Long fromMs, Long toMs,
                               String storeName, boolean allStores) {
+
         try (XSSFWorkbook wb = new XSSFWorkbook()) {
             XSSFSheet sheet = wb.createSheet("Orders");
             sheet.setDefaultColumnWidth(18);
 
+            CellStyle numDecimalStyle = makeNumDecimalStyle(wb);
             CellStyle headerStyle = makeHeaderStyle(wb);
             CellStyle storeStyle  = makeStoreStyle(wb);
             CellStyle shiftStyle  = makeShiftStyle(wb);
@@ -64,11 +66,12 @@ public class PosOrderExportService {
             CellStyle numStyle    = makeNumStyle(wb);
 
             // allStores = 18 cols (0–17), single = 17 cols (0–16)
-            int lastCol = allStores ? 17 : 16;
+            int lastCol = allStores ? 19 : 18;
 
             int[] minW = allStores
-                    ? new int[]{30,28,22,20,18,14,12,10,14,18,14,16,14,20,14,14,8,8}
-                    : new int[]{28,22,20,18,14,12,10,14,18,14,16,14,20,14,14,8,8};
+                    ? new int[]{30,28,22,20,18,14,12,10,14,18,14,16,14,20,14,14,8,8, 24,12}
+                    : new int[]{28,22,20,18,14,12,10,14,18,14,16,14,20,14,14,8,8,   24,12};
+
             for (int i = 0; i < minW.length; i++)
                 sheet.setColumnWidth(i, minW[i] * 256);
 
@@ -96,11 +99,11 @@ public class PosOrderExportService {
                     ? new String[]{"Xe / Store","Ca làm việc","OrderID#",
                     "Tên KH","SĐT KH","Số tiền","Giảm giá","VAT","Tổng cuối",
                     "Thời gian","Nguồn","Thanh toán",
-                    "Danh mục","Tên món","Giá gốc","Giá bán","% Giảm","SL"}
+                    "Danh mục","Tên món","Giá gốc","Giá bán","% Giảm","SL","Nguyên liệu","Số lượng NL"}
                     : new String[]{"Ca làm việc","OrderID#",
                     "Tên KH","SĐT KH","Số tiền","Giảm giá","VAT","Tổng cuối",
                     "Thời gian","Nguồn","Thanh toán",
-                    "Danh mục","Tên món","Giá gốc","Giá bán","% Giảm","SL"};
+                    "Danh mục","Tên món","Giá gốc","Giá bán","% Giảm","SL","Nguyên liệu","Số lượng NL"};
 
             Row hRow = sheet.createRow(rowNum++);
             hRow.setHeightInPoints(22);
@@ -111,8 +114,8 @@ public class PosOrderExportService {
             }
 
             rowNum = allStores
-                    ? writeAllStores(sheet, rows, rowNum, storeStyle, shiftStyle, dataStyle, numStyle)
-                    : writeSingleStore(sheet, rows, rowNum, shiftStyle, dataStyle, numStyle);
+                    ? writeAllStores(sheet, rows, rowNum, storeStyle, shiftStyle, dataStyle, numStyle, numDecimalStyle)
+                    : writeSingleStore(sheet, rows, rowNum, shiftStyle, dataStyle, numStyle, numDecimalStyle);
 
             final int PADDING = 4 * 256;
             for (int col = 0; col <= lastCol; col++) {
@@ -133,7 +136,7 @@ public class PosOrderExportService {
 
     private int writeAllStores(XSSFSheet sheet, List<PosOrderExportDto> rows, int rowNum,
                                CellStyle storeStyle, CellStyle shiftStyle,
-                               CellStyle dataStyle, CellStyle numStyle) {
+                               CellStyle dataStyle, CellStyle numStyle, CellStyle numDecimalStyle) {
 
         Map<Long, List<PosOrderExportDto>> byStore = rows.stream()
                 .collect(Collectors.groupingBy(PosOrderExportDto::storeId,
@@ -163,77 +166,112 @@ public class PosOrderExportService {
                                 LinkedHashMap::new, Collectors.toList()));
 
                 for (var orderEntry : byOrder.entrySet()) {
-                    List<PosOrderExportDto> orderRows = orderEntry.getValue();
-                    PosOrderExportDto of = orderRows.get(0);
+                    List<PosOrderExportDto> ingRows = orderEntry.getValue();
+                    PosOrderExportDto of = ingRows.get(0);
                     int orderStartRow = rowNum;
-                    int itemCount = orderRows.size();
 
-                    for (int ii = 0; ii < itemCount; ii++) {
-                        PosOrderExportDto r = orderRows.get(ii);
-                        Row row = sheet.createRow(rowNum++);
-                        row.setHeightInPoints(16);
+                    List<List<PosOrderExportDto>> itemGroups = groupByItem(ingRows);
+                    int itemIndex = 0;
 
-                        Cell c0 = row.createCell(0);
-                        c0.setCellValue(storeLabel);
-                        c0.setCellStyle(storeStyle);
+                    for (List<PosOrderExportDto> itemIngRows : itemGroups) {
+                        PosOrderExportDto itemFirst = itemIngRows.get(0);
+                        int itemStartRow = rowNum;
+                        int ingCount = (int) itemIngRows.stream()
+                                .filter(PosOrderExportDto::hasIngredient).count();
+                        int rowsForItem = Math.max(1, ingCount);
 
-                        Cell c1 = row.createCell(1);
-                        c1.setCellValue(shiftLabel);
-                        c1.setCellStyle(shiftStyle);
+                        // Lấy danh sách ingredient rows theo thứ tự
+                        List<PosOrderExportDto> ingList = itemIngRows.stream()
+                                .filter(PosOrderExportDto::hasIngredient)
+                                .collect(Collectors.toList());
 
-                        if (ii == 0) {
-                            setL(row, 2,  of.orderCode(), dataStyle);
-                            setL(row, 3,  nullDash(of.customerName()), dataStyle);
-                            setL(row, 4,  nullDash(of.customerPhone()), dataStyle);
-                            setN(row, 5,  of.totalAmount().doubleValue(), numStyle);
-                            setN(row, 6,  of.getDiscount(), numStyle);
-                            setN(row, 7,  of.getVat(), numStyle);
-                            setN(row, 8,  of.finalAmount().doubleValue(), numStyle);
-                            setL(row, 9,  fmtDateTime(of.createdAt()), dataStyle);
-                            setL(row, 10, srcLabel(of.orderSource()), dataStyle);
-                            setL(row, 11, pmLabel(of.paymentMethod()), dataStyle);
-                        } else {
-                            for (int c = 2; c <= 11; c++)
-                                row.createCell(c).setCellStyle(dataStyle);
+                        for (int ii = 0; ii < rowsForItem; ii++) {
+                            Row row = sheet.createRow(rowNum++);
+                            row.setHeightInPoints(16);
+
+                            // Col 0: Store
+                            Cell c0 = row.createCell(0);
+                            c0.setCellValue(storeLabel);
+                            c0.setCellStyle(storeStyle);
+
+                            // Col 1: Shift
+                            Cell c1 = row.createCell(1);
+                            c1.setCellValue(shiftLabel);
+                            c1.setCellStyle(shiftStyle);
+
+                            // Col 2–11: Order info — chỉ ghi ở row đầu tiên của item đầu tiên
+                            if (ii == 0 && itemIndex == 0) {
+                                setL(row, 2,  of.orderCode(), dataStyle);
+                                setL(row, 3,  nullDash(of.customerName()), dataStyle);
+                                setL(row, 4,  nullDash(of.customerPhone()), dataStyle);
+                                setN(row, 5,  of.totalAmount().doubleValue(), numStyle);
+                                setN(row, 6,  of.getDiscount(), numStyle);
+                                setN(row, 7,  of.getVat(), numStyle);
+                                setN(row, 8,  of.finalAmount().doubleValue(), numStyle);
+                                setL(row, 9,  fmtDateTime(of.createdAt()), dataStyle);
+                                setL(row, 10, srcLabel(of.orderSource()), dataStyle);
+                                setL(row, 11, pmLabel(of.paymentMethod()), dataStyle);
+                            } else {
+                                for (int c = 2; c <= 11; c++)
+                                    row.createCell(c).setCellStyle(dataStyle);
+                            }
+
+                            // Col 12–17: Item info — chỉ ghi ở row đầu tiên của item này
+                            if (ii == 0 && itemFirst.hasItem()) {
+                                double baseP = itemFirst.basePrice() != null ? itemFirst.basePrice().doubleValue() : 0;
+                                double price = itemFirst.finalUnitPrice() != null ? itemFirst.finalUnitPrice().doubleValue() : 0;
+                                double pct   = itemFirst.discountPercent() != null ? itemFirst.discountPercent().doubleValue() : 0;
+                                setL(row, 12, nvl(itemFirst.categoryName()), dataStyle);
+                                setL(row, 13, nvl(itemFirst.productName()), dataStyle);
+                                setN(row, 14, baseP, numStyle);
+                                setN(row, 15, price, numStyle);
+                                setL(row, 16, (int) pct + "%", dataStyle);
+                                setN(row, 17, itemFirst.quantity() != null ? itemFirst.quantity() : 0, numStyle);
+                            } else {
+                                for (int c = 12; c <= 17; c++)
+                                    row.createCell(c).setCellStyle(dataStyle);
+                            }
+
+                            // Col 18–20: Ingredient info
+                            if (ii < ingList.size()) {
+                                PosOrderExportDto ingRow = ingList.get(ii);
+                                setL(row, 18, nvl(ingRow.ingredientName()), dataStyle);
+                                double rawQty = ingRow.ingredientQty() != null ? ingRow.ingredientQty().doubleValue() : 0;
+                                setN(row, 19, rawQty, numDecimalStyle);
+                            } else {
+                                for (int c = 18; c <= 19; c++)
+                                    row.createCell(c).setCellStyle(dataStyle);
+                            }
                         }
 
-                        // Col 12-17: item info (Danh mục, Tên món, Giá gốc, Giá bán, % Giảm, SL)
-                        if (r.hasItem()) {
-                            double baseP = r.basePrice() != null ? r.basePrice().doubleValue() : 0;
-                            double price = r.finalUnitPrice() != null ? r.finalUnitPrice().doubleValue() : 0;
-                            double pct   = r.discountPercent() != null ? r.discountPercent().doubleValue() : 0;
-                            setL(row, 12, nvl(r.categoryName()), dataStyle);
-                            setL(row, 13, nvl(r.productName()), dataStyle);
-                            setN(row, 14, baseP, numStyle);                          // Giá gốc
-                            setN(row, 15, price, numStyle);                          // Giá bán
-                            setL(row, 16, (int) pct + "%", dataStyle);               // % Giảm
-                            setN(row, 17, r.quantity() != null ? r.quantity() : 0, numStyle); // SL
-                        } else {
-                            for (int c = 12; c <= 17; c++)
-                                row.createCell(c).setCellStyle(dataStyle);
-                        }
+                        // Merge cột item (12–17) nếu item có > 1 ingredient
+                        if (rowsForItem > 1)
+                            for (int col = 12; col <= 17; col++)
+                                sheet.addMergedRegion(new CellRangeAddress(itemStartRow, rowNum - 1, col, col));
+
+                        itemIndex++;
                     }
 
-                    if (itemCount > 1)
+                    // Merge cột order (2–11) nếu order chiếm > 1 row
+                    if (rowNum - 1 > orderStartRow)
                         for (int col = 2; col <= 11; col++)
-                            sheet.addMergedRegion(new CellRangeAddress(
-                                    orderStartRow, rowNum - 1, col, col));
+                            sheet.addMergedRegion(new CellRangeAddress(orderStartRow, rowNum - 1, col, col));
+
+                    // Merge cột shift (1) theo toàn bộ shift sau vòng order
                 }
 
                 if (rowNum - 1 > shiftStartRow)
-                    sheet.addMergedRegion(new CellRangeAddress(
-                            shiftStartRow, rowNum - 1, 1, 1));
+                    sheet.addMergedRegion(new CellRangeAddress(shiftStartRow, rowNum - 1, 1, 1));
             }
 
             if (rowNum - 1 > storeStartRow)
-                sheet.addMergedRegion(new CellRangeAddress(
-                        storeStartRow, rowNum - 1, 0, 0));
+                sheet.addMergedRegion(new CellRangeAddress(storeStartRow, rowNum - 1, 0, 0));
         }
         return rowNum;
     }
 
     private int writeSingleStore(XSSFSheet sheet, List<PosOrderExportDto> rows, int rowNum,
-                                 CellStyle shiftStyle, CellStyle dataStyle, CellStyle numStyle) {
+                                 CellStyle shiftStyle, CellStyle dataStyle, CellStyle numStyle, CellStyle numDecimalStyle) {
 
         Map<Long, List<PosOrderExportDto>> byShift = rows.stream()
                 .collect(Collectors.groupingBy(PosOrderExportDto::shiftId,
@@ -252,64 +290,114 @@ public class PosOrderExportService {
                             LinkedHashMap::new, Collectors.toList()));
 
             for (var orderEntry : byOrder.entrySet()) {
-                List<PosOrderExportDto> orderRows = orderEntry.getValue();
-                PosOrderExportDto of = orderRows.get(0);
+                List<PosOrderExportDto> ingRows = orderEntry.getValue();
+                PosOrderExportDto of = ingRows.get(0);
                 int orderStartRow = rowNum;
-                int itemCount = orderRows.size();
 
-                for (int ii = 0; ii < itemCount; ii++) {
-                    PosOrderExportDto r = orderRows.get(ii);
-                    Row row = sheet.createRow(rowNum++);
-                    row.setHeightInPoints(16);
+                List<List<PosOrderExportDto>> itemGroups = groupByItem(ingRows);
+                int itemIndex = 0;
 
-                    Cell c0 = row.createCell(0);
-                    c0.setCellValue(shiftLabel);
-                    c0.setCellStyle(shiftStyle);
+                for (List<PosOrderExportDto> itemIngRows : itemGroups) {
+                    PosOrderExportDto itemFirst = itemIngRows.get(0);
+                    int itemStartRow = rowNum;
+                    int ingCount = (int) itemIngRows.stream()
+                            .filter(PosOrderExportDto::hasIngredient).count();
+                    int rowsForItem = Math.max(1, ingCount);
 
-                    if (ii == 0) {
-                        setL(row, 1,  of.orderCode(), dataStyle);
-                        setL(row, 2,  nullDash(of.customerName()), dataStyle);
-                        setL(row, 3,  nullDash(of.customerPhone()), dataStyle);
-                        setN(row, 4,  of.totalAmount().doubleValue(), numStyle);
-                        setN(row, 5,  of.getDiscount(), numStyle);
-                        setN(row, 6,  of.getVat(), numStyle);
-                        setN(row, 7,  of.finalAmount().doubleValue(), numStyle);
-                        setL(row, 8,  fmtDateTime(of.createdAt()), dataStyle);
-                        setL(row, 9,  srcLabel(of.orderSource()), dataStyle);
-                        setL(row, 10, pmLabel(of.paymentMethod()), dataStyle);
-                    } else {
-                        for (int c = 1; c <= 10; c++)
-                            row.createCell(c).setCellStyle(dataStyle);
+                    List<PosOrderExportDto> ingList = itemIngRows.stream()
+                            .filter(PosOrderExportDto::hasIngredient)
+                            .collect(Collectors.toList());
+
+                    for (int ii = 0; ii < rowsForItem; ii++) {
+                        Row row = sheet.createRow(rowNum++);
+                        row.setHeightInPoints(16);
+
+                        // Col 0: Shift
+                        Cell c0 = row.createCell(0);
+                        c0.setCellValue(shiftLabel);
+                        c0.setCellStyle(shiftStyle);
+
+                        // Col 1–10: Order info — chỉ ghi ở row đầu tiên của item đầu tiên
+                        if (ii == 0 && itemIndex == 0) {
+                            setL(row, 1,  of.orderCode(), dataStyle);
+                            setL(row, 2,  nullDash(of.customerName()), dataStyle);
+                            setL(row, 3,  nullDash(of.customerPhone()), dataStyle);
+                            setN(row, 4,  of.totalAmount().doubleValue(), numStyle);
+                            setN(row, 5,  of.getDiscount(), numStyle);
+                            setN(row, 6,  of.getVat(), numStyle);
+                            setN(row, 7,  of.finalAmount().doubleValue(), numStyle);
+                            setL(row, 8,  fmtDateTime(of.createdAt()), dataStyle);
+                            setL(row, 9,  srcLabel(of.orderSource()), dataStyle);
+                            setL(row, 10, pmLabel(of.paymentMethod()), dataStyle);
+                        } else {
+                            for (int c = 1; c <= 10; c++)
+                                row.createCell(c).setCellStyle(dataStyle);
+                        }
+
+                        // Col 11–16: Item info — chỉ ghi ở row đầu tiên của item này
+                        if (ii == 0 && itemFirst.hasItem()) {
+                            double baseP = itemFirst.basePrice() != null ? itemFirst.basePrice().doubleValue() : 0;
+                            double price = itemFirst.finalUnitPrice() != null ? itemFirst.finalUnitPrice().doubleValue() : 0;
+                            double pct   = itemFirst.discountPercent() != null ? itemFirst.discountPercent().doubleValue() : 0;
+                            setL(row, 11, nvl(itemFirst.categoryName()), dataStyle);
+                            setL(row, 12, nvl(itemFirst.productName()), dataStyle);
+                            setN(row, 13, baseP, numStyle);
+                            setN(row, 14, price, numStyle);
+                            setL(row, 15, (int) pct + "%", dataStyle);
+                            setN(row, 16, itemFirst.quantity() != null ? itemFirst.quantity() : 0, numStyle);
+                        } else {
+                            for (int c = 11; c <= 16; c++)
+                                row.createCell(c).setCellStyle(dataStyle);
+                        }
+
+                        // Col 17–19: Ingredient info
+                        if (ii < ingList.size()) {
+                            PosOrderExportDto ingRow = ingList.get(ii);
+                            setL(row, 17, nvl(ingRow.ingredientName()), dataStyle);
+                            double rawQty = ingRow.ingredientQty() != null ? ingRow.ingredientQty().doubleValue() : 0;
+                            setN(row, 18, rawQty, numDecimalStyle);
+                        } else {
+                            for (int c = 17; c <= 18; c++)
+                                row.createCell(c).setCellStyle(dataStyle);
+                        }
                     }
 
-                    // Col 11-16: item info (Danh mục, Tên món, Giá gốc, Giá bán, % Giảm, SL)
-                    if (r.hasItem()) {
-                        double baseP = r.basePrice() != null ? r.basePrice().doubleValue() : 0;
-                        double price = r.finalUnitPrice() != null ? r.finalUnitPrice().doubleValue() : 0;
-                        double pct   = r.discountPercent() != null ? r.discountPercent().doubleValue() : 0;
-                        setL(row, 11, nvl(r.categoryName()), dataStyle);
-                        setL(row, 12, nvl(r.productName()), dataStyle);
-                        setN(row, 13, baseP, numStyle);                          // Giá gốc
-                        setN(row, 14, price, numStyle);                          // Giá bán
-                        setL(row, 15, (int) pct + "%", dataStyle);               // % Giảm
-                        setN(row, 16, r.quantity() != null ? r.quantity() : 0, numStyle); // SL
-                    } else {
-                        for (int c = 11; c <= 16; c++)
-                            row.createCell(c).setCellStyle(dataStyle);
-                    }
+                    // Merge cột item (11–16) nếu item có > 1 ingredient
+                    if (rowsForItem > 1)
+                        for (int col = 11; col <= 16; col++)
+                            sheet.addMergedRegion(new CellRangeAddress(itemStartRow, rowNum - 1, col, col));
+
+                    itemIndex++;
                 }
 
-                if (itemCount > 1)
+                // Merge cột order (1–10) nếu order chiếm > 1 row
+                if (rowNum - 1 > orderStartRow)
                     for (int col = 1; col <= 10; col++)
-                        sheet.addMergedRegion(new CellRangeAddress(
-                                orderStartRow, rowNum - 1, col, col));
+                        sheet.addMergedRegion(new CellRangeAddress(orderStartRow, rowNum - 1, col, col));
             }
 
             if (rowNum - 1 > shiftStartRow)
-                sheet.addMergedRegion(new CellRangeAddress(
-                        shiftStartRow, rowNum - 1, 0, 0));
+                sheet.addMergedRegion(new CellRangeAddress(shiftStartRow, rowNum - 1, 0, 0));
         }
         return rowNum;
+    }
+
+    private List<List<PosOrderExportDto>> groupByItem(List<PosOrderExportDto> rows) {
+        List<List<PosOrderExportDto>> groups = new ArrayList<>();
+        List<PosOrderExportDto> current = new ArrayList<>();
+        Long lastItemId = null;
+
+        for (PosOrderExportDto r : rows) {
+            Long itemId = r.orderItemId();
+            if (!Objects.equals(itemId, lastItemId) && lastItemId != null) {
+                groups.add(current);
+                current = new ArrayList<>();
+            }
+            current.add(r);
+            lastItemId = itemId;
+        }
+        if (!current.isEmpty()) groups.add(current);
+        return groups;
     }
 
     private String buildStoreLabel(String name, String address, String phone) {
@@ -474,5 +562,17 @@ public class PosOrderExportService {
         s.setBottomBorderColor(grey);
         s.setLeftBorderColor(grey);
         s.setRightBorderColor(grey);
+    }
+
+    private CellStyle makeNumDecimalStyle(XSSFWorkbook wb) {
+        XSSFCellStyle s = wb.createCellStyle();
+        DataFormat fmt = wb.createDataFormat();
+        s.setDataFormat(fmt.getFormat("#,##0.##"));  // tối đa 2 chữ số thập phân
+        s.setAlignment(HorizontalAlignment.RIGHT);
+        s.setVerticalAlignment(VerticalAlignment.CENTER);
+        s.setFillForegroundColor(new XSSFColor(new byte[]{(byte)239,(byte)246,(byte)255}, null));
+        s.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        setBorder(s);
+        return s;
     }
 }

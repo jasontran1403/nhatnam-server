@@ -10,8 +10,17 @@ spring:
       ddl-auto: update
     show-sql: false
 
+  servlet:
+    multipart:
+      max-file-size: 20MB
+      max-request-size: 25MB
+
 server:
   port: 9009
+
+ocr:
+  python:
+    url: http://localhost:9010
 
 application:
   security:

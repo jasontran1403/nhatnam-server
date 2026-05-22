@@ -135,20 +135,26 @@ public class PosExcelReportService {
         List<PosShiftCloseInventory> closeInv = closeInvRepo.findByShift(shift);
         List<PosShiftStockImport> importInv = importRepo.findByShift(shift);
 
+        // ── Import map ───────────────────────────────────────────────
         Map<Long, Integer> importMap = new HashMap<>();
+        Map<Long, Integer> uppMap = new HashMap<>();
         for (PosShiftStockImport imp : importInv) {
-            Long ingId = imp.getIngredientId();                    // ← snapshot
+            if (imp.getIngredientId() == null) continue;
+            Long ingId = imp.getIngredientId();
             int packQty = imp.getPackQty() != null ? imp.getPackQty() : 0;
-            int unitPerPack = imp.getUnitPerPack() != null         // ← snapshot
-                    ? imp.getUnitPerPack() : 1;
+            int unitPerPack = imp.getUnitPerPack() != null ? imp.getUnitPerPack() : 1;
             importMap.merge(ingId, packQty * unitPerPack, Integer::sum);
+            uppMap.putIfAbsent(ingId, unitPerPack);
         }
 
+        // ── Sales map + ingNameMap (gộp 1 vòng lặp) ─────────────────
         List<PosOrder> orders = orderRepo.findByShiftOrderByCreatedAtDesc(shift).stream()
                 .filter(o -> o.getStatus() != PosOrderStatus.CANCELLED)
                 .collect(Collectors.toList());
 
         Map<Long, BigDecimal[]> salesMap = new HashMap<>();
+        Map<Long, String> ingNameMap = new HashMap<>();
+
         for (PosOrder order : orders) {
             for (PosOrderItem item : orderItemRepo.findByOrder(order)) {
                 boolean isApp = order.getOrderSource() == OrderSource.SHOPEE_FOOD ||
@@ -158,6 +164,7 @@ public class PosExcelReportService {
 
                 for (PosOrderItemIngredient si : orderItemIngredientRepo.findByOrderItem(item)) {
                     long ingId = si.getIngredientId();
+                    ingNameMap.putIfAbsent(ingId, si.getIngredientName());
                     salesMap.putIfAbsent(ingId, new BigDecimal[]{
                             BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                             BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO});
@@ -185,33 +192,34 @@ public class PosExcelReportService {
             }
         }
 
-        Map<Long, PosShiftOpenInventory> openMap = openInv.stream()
-                .collect(Collectors.toMap(
-                        PosShiftOpenInventory::getIngredientId,  // ← thay i.getIngredient().getId()
-                        i -> i
-                ));
+        // ── Open/Close maps từ snapshot ──────────────────────────────
         Map<Long, PosShiftCloseInventory> closeMap = closeInv.stream()
-                .collect(Collectors.toMap(
-                        PosShiftCloseInventory::getIngredientId,  // ← thay i.getIngredient().getId()
-                        i -> i
-                ));
+                .filter(i -> i.getIngredientId() != null)
+                .collect(Collectors.toMap(PosShiftCloseInventory::getIngredientId, i -> i));
 
+        // ── Chia MAIN/SUB từ openInv snapshot type ───────────────────
+        List<PosShiftOpenInventory> mainIngs = openInv.stream()
+                .filter(i -> i.getIngredientId() != null
+                        && !"SUB".equals(i.getIngredientType()))
+                .collect(Collectors.toList());
 
-        // ============ FILTER INGREDIENTS THEO STORE_ID ============
-        List<PosIngredient> allIngs = ingredientRepo
-                .findByStoreIdAndIsActiveTrueOrderByDisplayOrderAscNameAsc(storeId);
+        List<PosShiftOpenInventory> subIngsFromOpen = openInv.stream()
+                .filter(i -> i.getIngredientId() != null
+                        && "SUB".equals(i.getIngredientType()))
+                .collect(Collectors.toList());
 
-        List<PosIngredient> mainIngs = allIngs.stream()
-                .filter(i -> !IngredientType.SUB.equals(i.getIngredientType()))
-                .toList();
+        Set<Long> mainIngIds = mainIngs.stream()
+                .map(PosShiftOpenInventory::getIngredientId)
+                .collect(Collectors.toSet());
 
-        List<PosIngredient> subIngs = allIngs.stream()
-                .filter(i -> IngredientType.SUB.equals(i.getIngredientType()))
-                .toList();
-        // ==========================================================
+        // Tất cả ID đã có trong openInv (cả MAIN lẫn SUB)
+        Set<Long> allOpenIngIds = openInv.stream()
+                .filter(i -> i.getIngredientId() != null)
+                .map(PosShiftOpenInventory::getIngredientId)
+                .collect(Collectors.toSet());
 
+        // ── Header ───────────────────────────────────────────────────
         ShiftMoney money = calcMoney(shift, orders);
-
         writeHeaderBlock(wb, ws, shift, money, 16, rowStart, storeName);
         writeSheet1Headers(wb, ws, rowStart + 6);
 
@@ -225,21 +233,20 @@ public class PosExcelReportService {
         XSSFCellStyle mergeEmptyStyle = createCellStyle(wb, "FFF3E0", false, 10, "000000", "center");
         setBorder(mergeEmptyStyle);
 
-        // ── MAIN ingredients ────────────────────────────────────────────────────
-        for (PosIngredient ing : mainIngs) {
-            Long id = ing.getId();
-            PosShiftOpenInventory oi = openMap.get(id);
+        // ── MAIN ingredients — từ openInv snapshot (type != SUB) ─────
+        for (PosShiftOpenInventory oi : mainIngs) {
+            Long id = oi.getIngredientId();
             PosShiftCloseInventory ci = closeMap.get(id);
             BigDecimal[] sales = salesMap.getOrDefault(id, new BigDecimal[]{
                     BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                     BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO});
 
-            int openPack = oi != null ? nvlInt(oi.getPackQuantity()) : 0;
-            BigDecimal openUnit = oi != null ? nvlBD(oi.getUnitQuantity()) : BigDecimal.ZERO;
+            int openPack = nvlInt(oi.getPackQuantity());
+            BigDecimal openUnit = nvlBD(oi.getUnitQuantity());
             int closePack = ci != null ? nvlInt(ci.getPackQuantity()) : 0;
             BigDecimal closeUnit = ci != null ? nvlBD(ci.getUnitQuantity()) : BigDecimal.ZERO;
 
-            int upp = nvlInt(ing.getUnitPerPack(), 1);
+            int upp = oi.getUnitPerPack() != null ? oi.getUnitPerPack() : 1;
             int impUnits = importMap.getOrDefault(id, 0);
 
             BigDecimal openingUnits = BigDecimal.valueOf((long) openPack * upp).add(openUnit);
@@ -261,7 +268,8 @@ public class PosExcelReportService {
 
             Row row = ws.createRow(ROW++);
             row.setHeightInPoints(18);
-            writeDataCells(wb, row, (stt % 2 == 0), stt, ing.getName(),
+            writeDataCells(wb, row, (stt % 2 == 0), stt,
+                    oi.getIngredientName(),
                     openPack, openUnit,
                     sales[0], sales[1], sales[2], sales[3], sales[4], sales[5], sales[6],
                     impPacks, closePack, closeUnit,
@@ -270,9 +278,9 @@ public class PosExcelReportService {
             stt++;
         }
 
-        // ── SUB ingredients ─────────────────────────────────────────────────────
-        for (PosIngredient ing : subIngs) {
-            Long id = ing.getId();
+        // ── SUB ingredients từ openInv (type = SUB) ──────────────────
+        for (PosShiftOpenInventory oi : subIngsFromOpen) {
+            Long id = oi.getIngredientId();
             BigDecimal[] sales = salesMap.getOrDefault(id, new BigDecimal[]{
                     BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                     BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO});
@@ -285,53 +293,68 @@ public class PosExcelReportService {
             sttCell.setCellStyle(subStyle);
 
             Cell nameCell = row.createCell(1);
-            nameCell.setCellValue(ing.getName());
+            nameCell.setCellValue(oi.getIngredientName()); // ← snapshot
             nameCell.setCellStyle(subStyle);
 
             mergeCells(ws, ROW - 1, 2, ROW - 1, 3, "", mergeEmptyStyle);
 
-            Cell s0 = row.createCell(4);
-            s0.setCellValue(sales[0].doubleValue());
-            s0.setCellStyle(subStyle);
-
-            Cell s10 = row.createCell(5);
-            s10.setCellValue(sales[1].doubleValue());
-            s10.setCellStyle(subStyle);
-
-            Cell s20 = row.createCell(6);
-            s20.setCellValue(sales[2].doubleValue());
-            s20.setCellStyle(subStyle);
-
-            Cell s100 = row.createCell(7);
-            s100.setCellValue(sales[3].doubleValue());
-            s100.setCellStyle(subStyle);
-
-            Cell shopee = row.createCell(8);
-            shopee.setCellValue(sales[4].doubleValue());
-            shopee.setCellStyle(subStyle);
-
-            Cell grab = row.createCell(9);
-            grab.setCellValue(sales[5].doubleValue());
-            grab.setCellStyle(subStyle);
-
-            Cell lanh = row.createCell(10);
-            lanh.setCellValue(sales[6].doubleValue());
-            lanh.setCellStyle(subStyle);
+            Cell s0 = row.createCell(4);   s0.setCellValue(sales[0].doubleValue());   s0.setCellStyle(subStyle);
+            Cell s10 = row.createCell(5);  s10.setCellValue(sales[1].doubleValue());  s10.setCellStyle(subStyle);
+            Cell s20 = row.createCell(6);  s20.setCellValue(sales[2].doubleValue());  s20.setCellStyle(subStyle);
+            Cell s100 = row.createCell(7); s100.setCellValue(sales[3].doubleValue()); s100.setCellStyle(subStyle);
+            Cell shopee = row.createCell(8); shopee.setCellValue(sales[4].doubleValue()); shopee.setCellStyle(subStyle);
+            Cell grab = row.createCell(9);   grab.setCellValue(sales[5].doubleValue());   grab.setCellStyle(subStyle);
+            Cell lanh = row.createCell(10);  lanh.setCellValue(sales[6].doubleValue());   lanh.setCellStyle(subStyle);
 
             mergeCells(ws, ROW - 1, 11, ROW - 1, 15, "", mergeEmptyStyle);
             stt++;
         }
 
-        // ── Footer ──────────────────────────────────────────────────────────────
+        // ── SUB ingredients từ salesMap (addon, không có trong openInv) ──
+        for (Map.Entry<Long, BigDecimal[]> entry : salesMap.entrySet()) {
+            Long id = entry.getKey();
+            if (allOpenIngIds.contains(id)) continue; // đã xử lý ở MAIN hoặc SUB từ openInv
+
+            BigDecimal[] sales = entry.getValue();
+
+            String ingName = ingNameMap.getOrDefault(id,
+                    importInv.stream()
+                            .filter(imp -> id.equals(imp.getIngredientId()))
+                            .map(PosShiftStockImport::getIngredientName)
+                            .findFirst()
+                            .orElse("NL #" + id));
+
+            Row row = ws.createRow(ROW++);
+            row.setHeightInPoints(18);
+
+            Cell sttCell = row.createCell(0);
+            sttCell.setCellValue(stt);
+            sttCell.setCellStyle(subStyle);
+
+            Cell nameCell = row.createCell(1);
+            nameCell.setCellValue(ingName);
+            nameCell.setCellStyle(subStyle);
+
+            mergeCells(ws, ROW - 1, 2, ROW - 1, 3, "", mergeEmptyStyle);
+
+            Cell s0 = row.createCell(4);   s0.setCellValue(sales[0].doubleValue());   s0.setCellStyle(subStyle);
+            Cell s10 = row.createCell(5);  s10.setCellValue(sales[1].doubleValue());  s10.setCellStyle(subStyle);
+            Cell s20 = row.createCell(6);  s20.setCellValue(sales[2].doubleValue());  s20.setCellStyle(subStyle);
+            Cell s100 = row.createCell(7); s100.setCellValue(sales[3].doubleValue()); s100.setCellStyle(subStyle);
+            Cell shopee = row.createCell(8); shopee.setCellValue(sales[4].doubleValue()); shopee.setCellStyle(subStyle);
+            Cell grab = row.createCell(9);   grab.setCellValue(sales[5].doubleValue());   grab.setCellStyle(subStyle);
+            Cell lanh = row.createCell(10);  lanh.setCellValue(sales[6].doubleValue());   lanh.setCellStyle(subStyle);
+
+            mergeCells(ws, ROW - 1, 11, ROW - 1, 15, "", mergeEmptyStyle);
+            stt++;
+        }
+
+        // ── Footer ───────────────────────────────────────────────────
         Row foot = ws.createRow(ROW);
         foot.setHeightInPoints(24);
         XSSFCellStyle footStyle = createCellStyle(wb, "009688", true, 11, "FFFFFF", "center");
         setBorder(footStyle);
         mergeCells(ws, ROW, 0, ROW, 10, "Tổng sản phẩm", footStyle);
-
-        Set<Long> mainIngIds = mainIngs.stream()
-                .map(PosIngredient::getId)
-                .collect(Collectors.toSet());
 
         BigDecimal totalSoldAll = salesMap.entrySet().stream()
                 .filter(e -> mainIngIds.contains(e.getKey()))
@@ -381,7 +404,14 @@ public class PosExcelReportService {
         // =======================================================
 
         for (PosOrder order : orders) {
-            for (PosOrderItem item : orderItemRepo.findByOrder(order)) {
+            List<PosOrderItem> items = orderItemRepo.findByOrder(order);
+
+            // Tổng subtotal của đơn để phân bổ tỷ lệ
+            BigDecimal orderSubTotal = items.stream()
+                    .map(i -> i.getSubtotal() != null ? i.getSubtotal() : BigDecimal.ZERO)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            for (PosOrderItem item : items) {
                 Object[] d = prodMap.computeIfAbsent(item.getProductId(),
                         id -> new Object[]{item.getProductName(), 0, 0, 0, 0, 0, 0,
                                 item.getBasePrice(), 0,
@@ -390,12 +420,20 @@ public class PosExcelReportService {
                 BigDecimal subtotal = item.getSubtotal() != null ?
                         item.getSubtotal() : BigDecimal.ZERO;
 
+                // Phân bổ finalAmount theo tỷ lệ subtotal item / tổng subtotal đơn
+                BigDecimal allocatedRevenue = BigDecimal.ZERO;
+                if (orderSubTotal.compareTo(BigDecimal.ZERO) > 0) {
+                    allocatedRevenue = order.getFinalAmount()
+                            .multiply(subtotal)
+                            .divide(orderSubTotal, 2, RoundingMode.HALF_UP);
+                }
+
                 if (order.getOrderSource() == OrderSource.SHOPEE_FOOD) {
                     d[5] = (int) d[5] + qty;
-                    d[10] = ((BigDecimal) d[10]).add(subtotal);
+                    d[10] = ((BigDecimal) d[10]).add(allocatedRevenue);
                 } else if (order.getOrderSource() == OrderSource.GRAB_FOOD) {
                     d[6] = (int) d[6] + qty;
-                    d[11] = ((BigDecimal) d[11]).add(subtotal);
+                    d[11] = ((BigDecimal) d[11]).add(allocatedRevenue);
                 } else {
                     int disc = item.getDiscountPercent() != null ?
                             item.getDiscountPercent() : 0;
@@ -404,7 +442,7 @@ public class PosExcelReportService {
                     else if (disc == 20) d[3] = (int) d[3] + qty;
                     else if (disc == 100) d[4] = (int) d[4] + qty;
                     else d[1] = (int) d[1] + qty;
-                    d[9] = ((BigDecimal) d[9]).add(subtotal);
+                    d[9] = ((BigDecimal) d[9]).add(allocatedRevenue);
                 }
             }
         }

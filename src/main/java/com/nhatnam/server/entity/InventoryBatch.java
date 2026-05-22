@@ -4,6 +4,7 @@ import com.nhatnam.server.enumtype.InventoryAction;
 import jakarta.persistence.*;
 import lombok.*;
 
+import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -32,6 +33,21 @@ public class InventoryBatch {
     @Column(nullable = false, length = 10)
     private InventoryAction action; // IMPORT | EXPORT | ADJUST
 
+    @Column(name = "supplier_name", length = 200)
+    private String supplierName;
+
+    @Column(name = "total_import_amount", precision = 15, scale = 2)
+    private BigDecimal totalImportAmount; // tổng tiền nhập của batch
+
+    // FK tới Supplier (nullable — ADJUST không có NCC)
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "supplier_id")
+    private Supplier supplier;
+
+    // Lý do xuất/nhập (EXPORT/IMPORT), null cho ADJUST
+    @Column(name = "note", columnDefinition = "TEXT")
+    private String note;
+
     /** Mã phiếu nhà cung cấp (IMPORT) hoặc lý do xuất kho (EXPORT). Null cho ADJUST. */
     @Column(name = "supplier_ref", length = 255)
     private String supplierRef;
@@ -39,6 +55,10 @@ public class InventoryBatch {
     /** URL ảnh phiếu giao hàng — chỉ có ở IMPORT. */
     @Column(name = "receipt_image_url", length = 500)
     private String receiptImageUrl;
+
+    /** URL ảnh phiếu giao hàng — chỉ có ở IMPORT. */
+    @Column(name = "receipt_image_urls", columnDefinition = "TEXT")
+    private String receiptImageUrls;
 
     @ManyToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "created_by", nullable = false)

@@ -11,4 +11,5 @@ import java.util.List;
 
 public interface ProductIngredientRepository extends JpaRepository<ProductIngredient, Long> {
     List<ProductIngredient> findByProductId(Long productId);
+    void deleteByProductId(Long productId);
 }

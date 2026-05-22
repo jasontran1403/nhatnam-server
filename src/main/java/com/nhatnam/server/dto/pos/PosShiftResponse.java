@@ -29,4 +29,5 @@ public class PosShiftResponse {
     // Thống kê nhanh
     private Integer totalOrders;
     private BigDecimal totalRevenue;
+    private BigDecimal offlineRevenue;
 }

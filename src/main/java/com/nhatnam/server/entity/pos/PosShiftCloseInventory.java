@@ -24,11 +24,18 @@ public class PosShiftCloseInventory {
     @Column(name = "ingredient_name", nullable = false, length = 255)
     private String ingredientName;
 
+    @Column(name = "ingredient_type", length = 50)
+    private String ingredientType;
+
     @Column(name = "unit", nullable = false, length = 50)
     private String unit;
 
     @Column(name = "pack_quantity", nullable = false)
     private Integer packQuantity = 0;
+
+    @Column(name = "unit_per_pack")
+    @Builder.Default
+    private Integer unitPerPack = 1;
 
     @Column(name = "unit_quantity", nullable = false, precision = 10, scale = 2)
     @Builder.Default

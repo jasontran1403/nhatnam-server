@@ -19,6 +19,10 @@ public class ManualImportRequest {
     /** Mã phiếu nhà cung cấp — optional */
     private String supplierRef;
 
+    private Long   supplierId;    // FK tới Supplier (optional)
+    private String supplierName;  // snapshot tên NCC
+    private String note;          // lý do nhập kho
+
     /** URL ảnh phiếu giao hàng — được set bởi server sau khi upload */
     private String receiptImageUrl;
 
@@ -34,5 +38,7 @@ public class ManualImportRequest {
 
         /** epoch-millis, nullable — hạn dùng của lô nhập */
         private Long expiryDate;
+
+        private BigDecimal unitPrice;
     }
 }

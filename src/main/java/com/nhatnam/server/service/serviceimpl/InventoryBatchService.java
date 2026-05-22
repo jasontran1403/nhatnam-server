@@ -1,5 +1,6 @@
 package com.nhatnam.server.service.serviceimpl;
 
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.nhatnam.server.dto.request.ManualExportRequest;
 import com.nhatnam.server.dto.request.ManualImportRequest;
 import com.nhatnam.server.dto.request.StockCheckRequest;
@@ -31,6 +32,8 @@ public class InventoryBatchService {
     private final InventoryLogRepository       logRepository;
     private final IngredientRepository         ingredientRepository;
     private final ImportBatchSequenceRepository seqRepository;
+    private final ObjectMapper objectMapper;
+    private final SupplierRepository           supplierRepository;
 
     // ── Sequence ─────────────────────────────────────────────────────────────
 
@@ -56,22 +59,64 @@ public class InventoryBatchService {
         // e.g. IS-20260404-0000000001
     }
 
+    private String urlsToJson(List<String> urls) {
+        if (urls == null || urls.isEmpty()) return null;
+        try { return objectMapper.writeValueAsString(urls); }
+        catch (Exception e) { return null; }
+    }
+
+    private List<String> jsonToUrls(String json) {
+        if (json == null || json.isBlank()) return List.of();
+        try { return objectMapper.readValue(json,
+                objectMapper.getTypeFactory()
+                        .constructCollectionType(List.class, String.class)); }
+        catch (Exception e) { return List.of(); }
+    }
+
+
     // ── IMPORT (gọi từ ManualImportService) ──────────────────────────────────
 
     @Transactional
     public InventoryBatch createImportBatch(
-            ManualImportRequest request, User actor, String receiptImageUrl) {
+            ManualImportRequest request, User actor,
+            List<String> receiptImageUrls) {
 
-        String batchCode   = nextBatchCode("IS-");
-        String supplierRef = request.getSupplierRef();
-        String logReason   = buildReason(batchCode, supplierRef);
-        long   now         = System.currentTimeMillis();
+        String batchCode = nextBatchCode("IS-");
+        long   now       = System.currentTimeMillis();
+
+        // Snapshot tên NCC: ưu tiên supplierName từ request,
+        // fallback lookup từ supplierId, fallback supplierRef cũ
+        String supplierName = resolveSupplierName(
+                request.getSupplierName(),
+                request.getSupplierId(),
+                request.getSupplierRef());
+
+        // Note: ưu tiên note, fallback supplierRef cũ
+        String note = firstNonBlank(request.getNote(), request.getSupplierRef());
+
+        String logReason = buildReason(batchCode, supplierName);
+
+        String firstUrl = (receiptImageUrls != null && !receiptImageUrls.isEmpty())
+                ? receiptImageUrls.get(0) : null;
+
+        // Resolve Supplier entity nếu có supplierId
+        Supplier supplier = null;
+        if (request.getSupplierId() != null) {
+            supplier = supplierRepository.findById(request.getSupplierId())
+                    .orElse(null);
+        }
+
+        BigDecimal totalImportAmount = BigDecimal.ZERO;
 
         InventoryBatch batch = InventoryBatch.builder()
                 .batchCode(batchCode)
                 .action(InventoryAction.IMPORT)
-                .supplierRef(supplierRef)
-                .receiptImageUrl(receiptImageUrl)
+                .supplierRef(supplierName)          // backward compat
+                .supplierName(supplierName)         // snapshot mới
+                .supplier(supplier)                 // FK mới
+                .note(note)                         // lý do nhập
+                .receiptImageUrl(firstUrl)
+                .receiptImageUrls(urlsToJson(receiptImageUrls))
                 .createdBy(actor)
                 .createdAt(now)
                 .build();
@@ -94,6 +139,12 @@ public class InventoryBatchService {
             ing.setUpdatedAt(now);
             ingredientRepository.save(ing);
 
+            BigDecimal unitPrice   = item.getUnitPrice() != null
+                    ? item.getUnitPrice() : BigDecimal.ZERO;
+            BigDecimal lineAmount  = unitPrice.multiply(added);   // added = item.getQuantity()
+            totalImportAmount      = totalImportAmount.add(lineAmount);
+
+
             logs.add(InventoryLog.builder()
                     .ingredient(ing)
                     .batch(batch)
@@ -102,13 +153,18 @@ public class InventoryBatchService {
                     .quantityBefore(before)
                     .quantityAfter(after)
                     .reason(logReason)
-                    .receiptImageUrl(receiptImageUrl)
+                    .unitPrice(unitPrice)       // ← THÊM
+                    .lineAmount(lineAmount)     // ← THÊM
+                    .receiptImageUrl(firstUrl)
+                    .receiptImageUrls(urlsToJson(receiptImageUrls))
                     .user(actor)
                     .createdAt(now)
                     .build());
+
         }
 
-        logRepository.saveAll(logs);
+        batch.setTotalImportAmount(totalImportAmount);
+        batchRepository.save(batch); // save lại để cập nhật totalImportAmount
         batch.setLogs(logs);
         return batch;
     }
@@ -118,14 +174,33 @@ public class InventoryBatchService {
     @Transactional
     public InventoryBatch createExportBatch(ManualExportRequest request, User actor) {
         String batchCode = nextBatchCode("ES-");
-        String reason    = request.getReason();
-        String logReason = buildReason(batchCode, reason);
         long   now       = System.currentTimeMillis();
+
+        // Snapshot tên NCC — KHÔNG fallback reason
+        String supplierName = resolveSupplierName(
+                request.getSupplierName(),
+                request.getSupplierId(),
+                null);  // ← bỏ fallback reason
+
+        // Note: ưu tiên note, fallback reason cũ
+        String note = firstNonBlank(request.getNote(), request.getReason());
+
+        // logReason chỉ dùng batchCode + supplierName (nếu có)
+        String logReason = buildReason(batchCode, supplierName);
+
+        Supplier supplier = null;
+        if (request.getSupplierId() != null) {
+            supplier = supplierRepository.findById(request.getSupplierId())
+                    .orElse(null);
+        }
 
         InventoryBatch batch = InventoryBatch.builder()
                 .batchCode(batchCode)
                 .action(InventoryAction.EXPORT)
-                .supplierRef(reason)
+                .supplierRef(supplierName)     // backward compat
+                .supplierName(supplierName)    // snapshot, null nếu không có NCC
+                .supplier(supplier)
+                .note(note)                    // lý do xuất (tách riêng khỏi NCC)
                 .createdBy(actor)
                 .createdAt(now)
                 .build();
@@ -140,7 +215,7 @@ public class InventoryBatchService {
                             "Ingredient not found: " + item.getIngredientId()));
 
             BigDecimal before = ing.getStockQuantity();
-            BigDecimal qty    = item.getQuantity(); // dương
+            BigDecimal qty    = item.getQuantity();
             BigDecimal after  = before.subtract(qty);
 
             if (after.compareTo(BigDecimal.ZERO) < 0)
@@ -156,7 +231,7 @@ public class InventoryBatchService {
                     .ingredient(ing)
                     .batch(batch)
                     .action(InventoryAction.EXPORT)
-                    .quantity(qty.negate()) // âm trong log
+                    .quantity(qty.negate())
                     .quantityBefore(before)
                     .quantityAfter(after)
                     .reason(logReason)
@@ -168,6 +243,29 @@ public class InventoryBatchService {
         logRepository.saveAll(logs);
         batch.setLogs(logs);
         return batch;
+    }
+
+    private String resolveSupplierName(String nameFromRequest,
+                                       Long supplierId,
+                                       String fallback) {
+        // Ưu tiên 1: tên được truyền trực tiếp từ request
+        if (nameFromRequest != null && !nameFromRequest.isBlank())
+            return nameFromRequest.trim();
+
+        // Ưu tiên 2: lookup từ supplierId
+        if (supplierId != null) {
+            return supplierRepository.findById(supplierId)
+                    .map(Supplier::getName)
+                    .orElse(null);
+        }
+
+        // Fallback: dùng supplierRef / reason cũ
+        return fallback;
+    }
+
+    private String firstNonBlank(String... vals) {
+        for (String v : vals) if (v != null && !v.isBlank()) return v;
+        return null;
     }
 
     // ── ADJUST (kiểm kho) ─────────────────────────────────────────────────────
@@ -253,6 +351,7 @@ public class InventoryBatchService {
                 .action(b.getAction().name())
                 .supplierRef(b.getSupplierRef())
                 .receiptImageUrl(b.getReceiptImageUrl())
+                .totalImportAmount(b.getTotalImportAmount())
                 .createdByName(b.getCreatedBy() != null ? b.getCreatedBy().getUsername() : "")
                 .createdAt(b.getCreatedAt())
                 .totalItems(b.getLogs() != null ? b.getLogs().size() : 0)
@@ -260,6 +359,12 @@ public class InventoryBatchService {
     }
 
     private InventoryBatchDetailResponse toDetail(InventoryBatch b) {
+        List<String> urls = jsonToUrls(b.getReceiptImageUrls());
+        // Fallback nếu list rỗng nhưng có url cũ
+        if (urls.isEmpty() && b.getReceiptImageUrl() != null) {
+            urls = List.of(b.getReceiptImageUrl());
+        }
+
         List<InventoryBatchDetailResponse.LogLineResponse> lines = b.getLogs().stream()
                 .map(log -> {
                     String adjustStatus = null;
@@ -277,6 +382,8 @@ public class InventoryBatchService {
                             .quantityBefore(log.getQuantityBefore())
                             .quantityAfter(log.getQuantityAfter())
                             .adjustStatus(adjustStatus)
+                            .unitPrice(log.getUnitPrice())
+                            .lineAmount(log.getLineAmount())
                             .build();
                 })
                 .toList();
@@ -287,6 +394,8 @@ public class InventoryBatchService {
                 .action(b.getAction().name())
                 .supplierRef(b.getSupplierRef())
                 .receiptImageUrl(b.getReceiptImageUrl())
+                .imageUrls(urls)
+                .totalImportAmount(b.getTotalImportAmount())
                 .createdByName(b.getCreatedBy() != null ? b.getCreatedBy().getUsername() : "")
                 .createdAt(b.getCreatedAt())
                 .lines(lines)

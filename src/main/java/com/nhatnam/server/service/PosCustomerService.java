@@ -2,6 +2,7 @@
 package com.nhatnam.server.service;
 
 import com.nhatnam.server.entity.pos.PosCustomer;
+import com.nhatnam.server.enumtype.PosCustomerType;
 import com.nhatnam.server.repository.pos.PosCustomerRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Service;
@@ -52,7 +53,8 @@ public class PosCustomerService {
             long   storeId,
             String dateOfBirth,       // nullable
             String deliveryAddress,   // nullable
-            String rawReferredByPhone // nullable
+            String rawReferredByPhone, // nullable
+            String customerType
     ) {
         String phone = normalizePhone(rawPhone);
 
@@ -75,6 +77,14 @@ public class PosCustomerService {
             }
         }
 
+        PosCustomerType type = PosCustomerType.KLE;
+        if (customerType != null && !customerType.isBlank()) {
+            try { type = PosCustomerType.valueOf(customerType.trim()); }
+            catch (IllegalArgumentException ignored) {}
+        }
+        final PosCustomerType finalType = type;
+
+
         final Long   finalRefId    = referredById;
         final String finalRefName  = referredByName;
         final String finalRefPhone = referredByPhone;
@@ -83,7 +93,7 @@ public class PosCustomerService {
                 .map(c -> {
                     // Cập nhật name
                     c.setName(name.trim());
-
+                    c.setCustomerType(finalType);
                     // Cập nhật optional fields nếu có giá trị
                     if (dateOfBirth != null && !dateOfBirth.isBlank())
                         c.setDateOfBirth(dateOfBirth.trim());
@@ -104,6 +114,7 @@ public class PosCustomerService {
                                 .phone(phone)
                                 .storeId(storeId)
                                 .name(name.trim())
+                                .customerType(finalType)
                                 .dateOfBirth(
                                         dateOfBirth != null && !dateOfBirth.isBlank()
                                                 ? dateOfBirth.trim() : null)
@@ -116,8 +127,7 @@ public class PosCustomerService {
                                 .build()));
     }
 
-    // ── Overload giữ backward-compat (gọi từ createOrder khi tự tạo khách) ──
     public PosCustomer createOrUpdate(String rawPhone, String name, long storeId) {
-        return createOrUpdate(rawPhone, name, storeId, null, null, null);
+        return createOrUpdate(rawPhone, name, storeId, null, null, null, null);
     }
 }

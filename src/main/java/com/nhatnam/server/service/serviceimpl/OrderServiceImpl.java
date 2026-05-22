@@ -422,8 +422,8 @@ public class OrderServiceImpl implements OrderService {
         int vatRatePct = product.getVatRate() != null
                 ? product.getVatRate().getPercentage() : 0;
 
-        String unit = product.getProductIngredients().get(0).getIngredient().getUnit();
-
+        // ✅ Lấy unit từ product, không lấy từ ingredient
+        String unit = product.getUnit();
         if (unit == null || unit.isBlank()) unit = "kg";
 
         OrderItem item = OrderItem.builder()
@@ -473,26 +473,40 @@ public class OrderServiceImpl implements OrderService {
                 ? variantIngredientRepository.findByVariantId(variant.getId())
                 : Collections.emptyList();
 
-        List<?> sources = !vis.isEmpty()
-                ? vis
-                : product.getProductIngredients();
-
-        for (Object src : sources) {
-            Ingredient ing;
-            if (src instanceof VariantIngredient vi) {
-                ing = vi.getIngredient();
-            } else {
-                ing = ((ProductIngredient) src).getIngredient();
+        if (!vis.isEmpty()) {
+            for (VariantIngredient vi : vis) {
+                Ingredient ing = vi.getIngredient();
+                // VariantIngredient chưa có quantity riêng → dùng 1.0 * orderQty
+                BigDecimal usedQty = quantity;
+                usageMap.merge(ing.getId(), usedQty, BigDecimal::add);
+                result.add(OrderItemIngredient.builder()
+                        .orderItem(orderItem)
+                        .ingredientId(ing.getId())
+                        .ingredientName(ing.getName())
+                        .ingredientImageUrl(ing.getImageUrl())
+                        .quantityUsed(usedQty)
+                        .unit(ing.getUnit())
+                        .build());
             }
-            usageMap.merge(ing.getId(), quantity, BigDecimal::add);
-            result.add(OrderItemIngredient.builder()
-                    .orderItem(orderItem)
-                    .ingredientId(ing.getId())
-                    .ingredientName(ing.getName())
-                    .ingredientImageUrl(ing.getImageUrl())
-                    .quantityUsed(quantity)
-                    .unit(ing.getUnit())
-                    .build());
+        } else {
+            // Direct product ingredients — nhân quantity của ingredient với số lượng order
+            for (ProductIngredient pi : product.getProductIngredients()) {
+                Ingredient ing = pi.getIngredient();
+                BigDecimal ingQtyPerUnit = pi.getQuantity() != null
+                        && pi.getQuantity().compareTo(BigDecimal.ZERO) > 0
+                        ? pi.getQuantity() : BigDecimal.ONE;
+                BigDecimal usedQty = ingQtyPerUnit.multiply(quantity)
+                        .setScale(3, RoundingMode.HALF_UP);
+                usageMap.merge(ing.getId(), usedQty, BigDecimal::add);
+                result.add(OrderItemIngredient.builder()
+                        .orderItem(orderItem)
+                        .ingredientId(ing.getId())
+                        .ingredientName(ing.getName())
+                        .ingredientImageUrl(ing.getImageUrl())
+                        .quantityUsed(usedQty)
+                        .unit(ing.getUnit())
+                        .build());
+            }
         }
         return result;
     }

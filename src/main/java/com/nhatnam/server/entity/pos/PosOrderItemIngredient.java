@@ -91,6 +91,9 @@ public class PosOrderItemIngredient {
     @Column(name = "variant_group_name")
     private String variantGroupName;
 
+    @Column(name = "ingredient_unit", length = 20)
+    private String ingredientUnit;
+
     // ─────────────────────────────────────────────────────────────────────────
     // Utility: tính quantityUsed từ unitWeights hoặc fallback
     // ─────────────────────────────────────────────────────────────────────────

@@ -304,7 +304,8 @@ public class AuthenticationController {
                     && !type.equals("pos-product")
                     && !type.equals("category")
                     && !type.equals("variant")
-                    && !type.equals("ingredient")) {
+                    && !type.equals("ingredient")
+                    && !type.equals("seller-import")) {
                 log.warn("⚠️ Invalid image type requested: {}", type);
                 return ResponseEntity.badRequest().build();
             }

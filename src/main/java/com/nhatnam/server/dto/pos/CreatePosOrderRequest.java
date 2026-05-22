@@ -1,5 +1,6 @@
 package com.nhatnam.server.dto.pos;
 
+import com.fasterxml.jackson.annotation.JsonProperty;
 import com.nhatnam.server.enumtype.OrderSource;
 import jakarta.validation.constraints.*;
 import lombok.Data;
@@ -18,6 +19,9 @@ public class CreatePosOrderRequest {
     private String customerPhone;
     private String customerName;
 
+    @JsonProperty("appOrderCode")
+    private String appOrderCode;
+
     // ── Discount ──────────────────────────────────────────────────
     private Long customerDiscountId;
     private Long discountItemProductId;
@@ -25,6 +29,8 @@ public class CreatePosOrderRequest {
     private BigDecimal appDiscountAmount;   // Số tiền giảm (nếu user nhập mode 1)
     private BigDecimal appFinalAmount;      // Giá cuối (nếu user nhập mode 2)
     private BigDecimal manualDiscountAmount;
+    private String voucherCode;              // ← THÊM
+    private Long   voucherItemProductId;     // ← THÊM (cho ITEM_DISCOUNT)
 
     @NotNull
     @Size(min = 1)

@@ -46,6 +46,65 @@ public class PosService {
     private final PosCustomerRepository        posCustomerRepo;
     private final PosCustomerDiscountRepository customerDiscountRepo;
 
+    public PosShiftResponse toShiftResponsePublic(PosShift s) {
+        List<PosOrder> orders = orderRepo.findByShiftOrderByCreatedAtDesc(s);
+        BigDecimal revenue = orders.stream()
+                .filter(o -> o.getStatus() != PosOrderStatus.CANCELLED)
+                .map(PosOrder::getFinalAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        BigDecimal offlineRevenue = orders.stream()
+                .filter(o -> o.getStatus() != PosOrderStatus.CANCELLED)
+                .filter(o -> o.getOrderSource() == OrderSource.TAKE_AWAY
+                        || o.getOrderSource() == OrderSource.DINE_IN)
+                .map(PosOrder::getFinalAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        return PosShiftResponse.builder()
+                .id(s.getId())
+                .staffName(s.getStaffName())
+                .status(s.getStatus())
+                .shiftDate(s.getShiftDate())
+                .isFirstShiftOfDay(s.getIsFirstShiftOfDay())
+                .openTime(s.getOpenTime())
+                .closeTime(s.getCloseTime())
+                .openingCash(s.getOpeningCash())
+                .closingCash(s.getClosingCash())
+                .transferAmount(s.getTransferAmount())
+                .note(s.getNote())
+                .openDenominations(List.of())
+                .closeDenominations(List.of())
+                .openInventory(List.of())
+                .closeInventory(List.of())
+                .totalOrders(orders.size())
+                .totalRevenue(revenue)
+                .offlineRevenue(offlineRevenue)
+                .build();
+    }
+
+    public BigDecimal getOpeningBalance(Long shiftId) {
+        PosShift shift = shiftRepo.findById(shiftId)
+                .orElseThrow(() -> new RuntimeException("Shift not found: " + shiftId));
+
+        // Ưu tiên lấy trực tiếp từ cột opening_cash (tốt nhất)
+        if (shift.getOpeningCash() != null && shift.getOpeningCash().compareTo(BigDecimal.ZERO) > 0) {
+            return shift.getOpeningCash();
+        }
+
+        // Fallback: Tính từ danh sách denomination (open)
+        List<PosShiftDenomination> openDenoms = shift.getOpenDenominations();
+
+        if (openDenoms != null && !openDenoms.isEmpty()) {
+
+            return openDenoms.stream()
+                    .map(d -> BigDecimal.valueOf(d.getDenomination())
+                            .multiply(BigDecimal.valueOf(d.getQuantity())))
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+        }
+
+        return BigDecimal.ZERO;
+    }
+
     @Transactional
     public void deleteOrder(Long orderId) {
         PosOrder order = orderRepo.findById(orderId)
@@ -268,13 +327,57 @@ public class PosService {
         return toIngredientResponse(ingredientRepo.save(ing));
     }
 
+    // Trong PosService.java — thay thế toàn bộ method deleteIngredient
+
+    // Trong PosService.java — thay thế toàn bộ method deleteIngredient
+
     @Transactional
     public void deleteIngredient(Long id) {
         PosIngredient ing = ingredientRepo.findById(id)
                 .orElseThrow(() -> new RuntimeException("Ingredient not found: " + id));
 
-        variantIngredientRepo.deleteByIngredientId(id);
+        // 1. Tìm tất cả variant đang chứa ingredient này (trước khi xóa)
+        List<PosVariantIngredient> affectedVis = variantIngredientRepo.findByIngredientId(id);
+        Set<Long> affectedVariantIds = affectedVis.stream()
+                .map(vi -> vi.getVariant().getId())
+                .collect(Collectors.toSet());
 
+        // 2. Hard delete ingredient khỏi tất cả biến thể
+        variantIngredientRepo.deleteByIngredientId(id);
+        variantIngredientRepo.flush();
+
+        // 3. Cập nhật lại min/max của từng variant bị ảnh hưởng
+        for (Long variantId : affectedVariantIds) {
+            PosVariant variant = variantRepo.findById(variantId).orElse(null);
+            if (variant == null) continue;
+            if (Boolean.TRUE.equals(variant.getIsAddonGroup())) continue;
+
+            // Tính tổng maxSelectableCount của các ingredient CÒN LẠI
+            // maxSelectableCount null = 1 (mặc định chọn được 1)
+            int maxPossible = variantIngredientRepo.findByVariant(variant).stream()
+                    .mapToInt(vi -> vi.getMaxSelectableCount() != null
+                            ? vi.getMaxSelectableCount() : 1)
+                    .sum();
+
+            boolean changed = false;
+
+            if (variant.getMaxSelect() > maxPossible) {
+                variant.setMaxSelect(maxPossible);
+                changed = true;
+            }
+            if (variant.getMinSelect() > variant.getMaxSelect()) {
+                variant.setMinSelect(variant.getMaxSelect());
+                changed = true;
+            }
+
+            if (changed) {
+                variantRepo.save(variant);
+                log.info("[deleteIngredient] Variant #{} → min={} max={} (maxPossible={})",
+                        variantId, variant.getMinSelect(), variant.getMaxSelect(), maxPossible);
+            }
+        }
+
+        // 4. Hard delete ingredient
         ingredientRepo.delete(ing);
     }
 
@@ -562,6 +665,10 @@ public class PosService {
                         .ingredientId(ing.getId())                    // ← snapshot
                         .ingredientName(ing.getName())                // ← snapshot
                         .unit(ing.getUnit() != null ? ing.getUnit() : "Cái") // ← snapshot
+                        .ingredientType(ing.getIngredientType() != null   // ← THÊM
+                                ? ing.getIngredientType().name() : "MAIN")
+                        .unitPerPack(ing.getUnitPerPack() != null    // ← THÊM
+                                ? ing.getUnitPerPack() : 1)
                         .packQuantity(item.getPackQuantity() != null ? item.getPackQuantity() : 0)
                         .unitQuantity(item.getUnitQuantity() != null
                                 ? item.getUnitQuantity().setScale(2, RoundingMode.HALF_UP)
@@ -577,6 +684,8 @@ public class PosService {
                             .ingredientId(c.getIngredientId())       // ← snapshot
                             .ingredientName(c.getIngredientName())   // ← snapshot
                             .unit(c.getUnit())                       // ← snapshot
+                            .ingredientType(c.getIngredientType())
+                            .unitPerPack(c.getUnitPerPack())
                             .packQuantity(c.getPackQuantity())
                             .unitQuantity(c.getUnitQuantity())
                             .build())
@@ -611,6 +720,10 @@ public class PosService {
                     .ingredientId(ing.getId())                    // ← snapshot
                     .ingredientName(ing.getName())                // ← snapshot
                     .unit(ing.getUnit() != null ? ing.getUnit() : "Cái") // ← snapshot
+                    .ingredientType(ing.getIngredientType() != null   // ← THÊM
+                            ? ing.getIngredientType().name() : "MAIN")
+                    .unitPerPack(ing.getUnitPerPack() != null    // ← THÊM
+                            ? ing.getUnitPerPack() : 1)
                     .packQuantity(item.getPackQuantity() != null ? item.getPackQuantity() : 0)
                     .unitQuantity(item.getUnitQuantity() != null
                             ? item.getUnitQuantity().setScale(2, RoundingMode.HALF_UP)
@@ -646,6 +759,10 @@ public class PosService {
                 .map(this::toShiftResponse)
                 .collect(Collectors.toList());
     }
+
+    private final PosAccumulationService  accumulationService;
+    private final PosEVoucherRepository eVoucherRepo;
+    private final PosEVoucherUsageLogRepository eVoucherUsageLogRepo;
 
     @Transactional
     public PosOrderResponse createOrder(CreatePosOrderRequest req, Long userId, Long storeId) {
@@ -751,14 +868,7 @@ public class PosService {
             }
             BigDecimal addonRawTotal = addonRaw.multiply(BigDecimal.valueOf(itemReq.getQuantity()));
 
-            // ── totalAmount luôn dùng giá RAW ────────────────────
-            BigDecimal effectivePrice = (!isAppOrder
-                    && itemReq.getFinalUnitPrice() != null
-                    && itemReq.getFinalUnitPrice().compareTo(BigDecimal.ZERO) > 0)
-                    ? itemReq.getFinalUnitPrice()
-                    : basePrice;
-
-            BigDecimal itemBaseTotal = effectivePrice.multiply(BigDecimal.valueOf(itemReq.getQuantity()));
+            BigDecimal itemBaseTotal = basePrice.multiply(BigDecimal.valueOf(itemReq.getQuantity()));
             totalAmount = totalAmount.add(itemBaseTotal).add(addonRawTotal);
 
             // VAT tính trên basePrice raw (sẽ điều chỉnh nếu cần)
@@ -922,12 +1032,13 @@ public class PosService {
 
                 if (calc.requestedFinalUnitPrice() != null
                         && calc.requestedFinalUnitPrice().compareTo(BigDecimal.ZERO) > 0) {
-                    // Flutter đã tính sẵn (weight × discounted price)
+                    // Có định lượng: Flutter đã tính sẵn
                     finalUnitPrice = calc.requestedFinalUnitPrice();
                 } else {
-                    // Không có weight override, tính từ basePrice × (1 - discount%)
+                    // Không có định lượng: tính từ basePrice × (1 - discount%)
+                    // → đây chính là giá lẻ (đã làm tròn nghìn)
                     finalUnitPrice = roundToThousand(
-                            calc.basePrice().multiply(BigDecimal.ONE.subtract(
+                            calc.product().getBasePrice().multiply(BigDecimal.ONE.subtract(
                                     BigDecimal.valueOf(calc.discountPercent())
                                             .divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP))));
                 }
@@ -994,6 +1105,43 @@ public class PosService {
             }
         }
 
+        // ==================== EVOUCHER DISCOUNT ====================
+        BigDecimal eVoucherDiscountAmt  = BigDecimal.ZERO;
+        PosEVoucher appliedVoucher      = null;
+
+        if (!isAppOrder
+                && req.getVoucherCode() != null
+                && !req.getVoucherCode().isBlank()) {
+
+            PosEVoucher voucher = eVoucherRepo
+                    .findByCode(req.getVoucherCode().trim())
+                    .orElse(null);
+
+            if (voucher == null)
+                throw new RuntimeException("Voucher không tồn tại: " + req.getVoucherCode());
+            if (voucher.getStatus() != PosEVoucher.EVoucherStatus.ACTIVE)
+                throw new RuntimeException("Voucher đã được sử dụng hoặc hết hạn");
+            if (voucher.getExpiredAt() < now)
+                throw new RuntimeException("Voucher đã hết hạn");
+            if (!voucher.getStoreId().equals(storeId))
+                throw new RuntimeException("Voucher không thuộc store này");
+
+            PosVoucherTemplate tmpl = voucher.getTemplate();
+
+            eVoucherDiscountAmt = voucher.getVoucherValue().min(finalAmount);
+
+            // Không hoàn tiền — chỉ trừ tối đa bằng finalAmount
+            eVoucherDiscountAmt = eVoucherDiscountAmt.max(BigDecimal.ZERO);
+            finalAmount         = finalAmount.subtract(eVoucherDiscountAmt).max(BigDecimal.ZERO);
+
+            // Làm tròn lên nghìn
+            BigDecimal rem = finalAmount.remainder(BigDecimal.valueOf(1000));
+            if (rem.compareTo(BigDecimal.ZERO) != 0)
+                finalAmount = finalAmount.subtract(rem).add(BigDecimal.valueOf(1000));
+
+            appliedVoucher = voucher;
+        }
+
         // ==================== TÍNH LẠI VAT SAU DISCOUNT ====================
         BigDecimal manualDiscountAmt = (!isAppOrder
                 && req.getManualDiscountAmount() != null
@@ -1003,7 +1151,7 @@ public class PosService {
 
         BigDecimal totalDiscountForVat = isAppOrder
                 ? appDiscountAmount
-                : manualDiscountAmt.add(customerDiscountAmt);
+                : manualDiscountAmt.add(customerDiscountAmt).add(eVoucherDiscountAmt);
 
         totalVat = BigDecimal.ZERO;
         List<CalcItem> rebuiltWithVat = new ArrayList<>();
@@ -1024,12 +1172,6 @@ public class PosService {
                         .multiply(rate)
                         .divide(BigDecimal.ONE.add(rate), 0, RoundingMode.HALF_UP);
 
-                // ← XÓA block: if (!isAppOrder && calc.quantity() > 0) { newFinalUnitPrice = ... }
-
-            } else if (!isAppOrder
-                    && calc.vatPercent() == 0
-                    && totalAmount.compareTo(BigDecimal.ZERO) > 0) {
-                // ← XÓA block này luôn
             }
 
             if (!isAppOrder) {
@@ -1055,7 +1197,6 @@ public class PosService {
         PosStore store = posStoreRepo.findById(storeId)
                 .orElseThrow(() -> new RuntimeException("Store not found: " + storeId));
 
-        BigDecimal grossAmount = totalAmount.subtract(appDiscountAmount); // (total - discount) raw
         BigDecimal platformFeeAmountSnapshot = isAppOrder
                 ? totalAmount.subtract(appDiscountAmount).subtract(finalAmount)
                 : BigDecimal.ZERO;
@@ -1064,17 +1205,19 @@ public class PosService {
         BigDecimal totalDiscountAmount;
 
         if (!isAppOrder) {
-            // Tính tổng discount từ % giảm giá của từng item
             BigDecimal itemDiscountTotal = calcs.stream()
                     .map(c -> {
-                        if (c.discountPercent() > 0 && c.requestedFinalUnitPrice() != null) {
-                            // giá chưa giảm % = finalUnitPrice / (1 - discount%)
+                        if (c.discountPercent() == 100) {
+                            return c.product().getBasePrice()
+                                    .multiply(BigDecimal.valueOf(c.quantity()));
+                        } else if (c.discountPercent() > 0 && c.requestedFinalUnitPrice() != null) {
                             BigDecimal priceBeforeDiscount = c.requestedFinalUnitPrice()
                                     .divide(BigDecimal.ONE.subtract(
                                             BigDecimal.valueOf(c.discountPercent())
                                                     .divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP)
                                     ), 0, RoundingMode.HALF_UP);
-                            return priceBeforeDiscount.subtract(c.requestedFinalUnitPrice());
+                            return priceBeforeDiscount.subtract(c.requestedFinalUnitPrice())
+                                    .multiply(BigDecimal.valueOf(c.quantity()));
                         } else if (c.discountPercent() > 0) {
                             return roundToThousand(c.product().getBasePrice()
                                     .multiply(BigDecimal.valueOf(c.discountPercent())
@@ -1088,9 +1231,24 @@ public class PosService {
             BigDecimal manualDiscount = req.getManualDiscountAmount() != null
                     ? req.getManualDiscountAmount() : BigDecimal.ZERO;
 
-            totalDiscountAmount = itemDiscountTotal.add(manualDiscount);
+            // ← SỬA: thêm customerDiscountAmt + eVoucherDiscountAmt
+            totalDiscountAmount = itemDiscountTotal
+                    .add(manualDiscount)
+                    .add(customerDiscountAmt)
+                    .add(eVoucherDiscountAmt);
+
         } else {
-            totalDiscountAmount = appDiscountAmount.add(customerDiscountAmt);
+            totalDiscountAmount = appDiscountAmount
+                    .add(customerDiscountAmt)
+                    .add(eVoucherDiscountAmt);  // ← THÊM cho app order luôn
+        }
+
+        String appOrderCodeFull = null;
+        if (isAppOrder) {
+            if (req.getAppOrderCode() == null || req.getAppOrderCode().isBlank())
+                throw new RuntimeException("Đơn App bắt buộc nhập mã đơn hàng.");
+            String prefix = req.getOrderSource() == OrderSource.SHOPEE_FOOD ? "SF-" : "GF-";
+            appOrderCodeFull = prefix + req.getAppOrderCode().trim();
         }
 
         PosOrder order = PosOrder.builder()
@@ -1100,6 +1258,7 @@ public class PosService {
                 .store(store)
                 .orderSource(req.getOrderSource())
                 .status(PosOrderStatus.COMPLETED)
+                .appOrderCode(appOrderCodeFull)
                 .note(req.getNote())
                 .totalAmount(totalAmount)                                   // raw
                 .discountAmount(totalDiscountAmount) // raw discount
@@ -1115,10 +1274,40 @@ public class PosService {
                 .paymentMethod(req.getPaymentMethod())
                 .createdAt(now)
                 .updatedAt(now)
+                .eVoucherId(appliedVoucher != null ? appliedVoucher.getId() : null)
+                .eVoucherCode(appliedVoucher != null ? appliedVoucher.getCode() : null)
+                .eVoucherDiscountAmount(eVoucherDiscountAmt.compareTo(BigDecimal.ZERO) > 0
+                        ? eVoucherDiscountAmt : null)
                 .build();
 
         order = orderRepo.save(order);
 
+        // ── Mark voucher USED + lưu usage log ────────────────────────
+        if (appliedVoucher != null) {
+            final BigDecimal discountApplied = eVoucherDiscountAmt;
+            final BigDecimal orderBeforeVoucher = finalAmount.add(discountApplied);
+            final PosOrder savedOrder = order;
+
+            // Mark USED
+            appliedVoucher.setStatus(PosEVoucher.EVoucherStatus.USED);
+            appliedVoucher.setUsedOrderId(savedOrder.getId());
+            appliedVoucher.setUsedAt(now);
+            eVoucherRepo.save(appliedVoucher);
+
+            // Lưu usage log
+            eVoucherUsageLogRepo.save(PosEVoucherUsageLog.builder()
+                    .voucher(appliedVoucher)
+                    .orderId(savedOrder.getId())
+                    .customerId(appliedVoucher.getCustomer().getId())
+                    .storeId(storeId)
+                    .voucherValue(appliedVoucher.getVoucherValue())
+                    .actualDiscountApplied(discountApplied)
+                    .orderAmountBeforeVoucher(orderBeforeVoucher)
+                    .usedAt(now)
+                    .voucherType(appliedVoucher.getTemplate().getVoucherType().name())
+                    .voucherCode(appliedVoucher.getCode())
+                    .build());
+        }
 
         // Commit customer discount
         if (req.getCustomerDiscountId() != null) {
@@ -1127,12 +1316,15 @@ public class PosService {
         }
 
         // Cập nhật tổng chi tiêu khách hàng
-        if (req.getCustomerPhone() != null && !req.getCustomerPhone().isBlank()) {
-            String normalizedPhone = PosCustomerService.normalizePhone(req.getCustomerPhone());
-            PosCustomer customer = posCustomerRepo.findByPhone(normalizedPhone).orElse(null);
+        if (!isAppOrder && req.getCustomerPhone() != null
+                && !req.getCustomerPhone().isBlank()) {
+            String normalizedPhone = PosCustomerService
+                    .normalizePhone(req.getCustomerPhone());
+            PosCustomer customer = posCustomerRepo
+                    .findByPhone(normalizedPhone).orElse(null);
             if (customer != null) {
-                customer.setTotalSpend(customer.getTotalSpend().add(finalAmount));
-                posCustomerRepo.save(customer);
+                accumulationService.recordSpend(
+                        customer.getId(), storeId, order.getId(), totalAmount); // ← totalAmount thay vì finalAmount
             }
         }
 
@@ -1151,13 +1343,11 @@ public class PosService {
                 defaultPrice = calc.product.getBasePrice();
                 // basePrice = giá sau giảm % (làm tròn lên nghìn cho offline)
                 if (calc.discountPercent() > 0) {
-                    basePrice = roundToThousand(
-                            calc.product.getBasePrice()
-                                    .multiply(BigDecimal.ONE.subtract(
-                                            BigDecimal.valueOf(calc.discountPercent())
-                                                    .divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP)
-                                    ))
-                    );
+                    BigDecimal discount = BigDecimal.valueOf(calc.discountPercent())
+                            .divide(BigDecimal.valueOf(100));
+
+                    basePrice = calc.product.getBasePrice()
+                            .multiply(BigDecimal.ONE.subtract(discount));
                     discountPercent = calc.discountPercent();
                 } else {
                     basePrice = calc.product.getBasePrice();
@@ -1200,15 +1390,16 @@ public class PosService {
                         List<BigDecimal> unitWeights = s.getUnitWeights();
                         BigDecimal quantityUsed = (unitWeights != null && !unitWeights.isEmpty())
                                 ? unitWeights.stream().reduce(BigDecimal.ZERO, BigDecimal::add)
-                                : defaultDeductPerUnit
-                                .multiply(BigDecimal.valueOf(s.getSelectedCount()))
-                                .multiply(BigDecimal.valueOf(calc.quantity()));
+                                : BigDecimal.valueOf(s.getSelectedCount());
+
+                        quantityUsed = quantityUsed.multiply(BigDecimal.valueOf(calc.quantity()));
 
                         ingList.add(PosOrderItemIngredient.builder()
                                 .orderItem(orderItem)
                                 .ingredientId(ing.getId())
                                 .ingredientName(ing.getName())
                                 .ingredientImageUrl(ing.getImageUrl())
+                                .ingredientUnit(ing.getUnit())
                                 .selectedCount(s.getSelectedCount())
                                 .defaultDeductPerUnit(defaultDeductPerUnit)
                                 .unitWeights(unitWeights)
@@ -1506,6 +1697,13 @@ public class PosService {
                 .map(PosOrder::getFinalAmount)
                 .reduce(BigDecimal.ZERO, BigDecimal::add);
 
+        BigDecimal offlineRevenue = orders.stream()
+                .filter(o -> o.getStatus() != PosOrderStatus.CANCELLED)
+                .filter(o -> o.getOrderSource() == OrderSource.TAKE_AWAY
+                        || o.getOrderSource() == OrderSource.DINE_IN)
+                .map(PosOrder::getFinalAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
         BigDecimal totalVat = orders.stream()
                 .filter(o -> o.getStatus() != PosOrderStatus.CANCELLED)
                 .flatMap(o -> orderItemRepo.findByOrder(o).stream())
@@ -1530,6 +1728,7 @@ public class PosService {
                 .closeInventory(closeInv)
                 .totalOrders(orders.size())
                 .totalRevenue(revenue.add(totalVat))
+                .offlineRevenue(offlineRevenue)
                 .build();
     }
 
@@ -1662,21 +1861,45 @@ public class PosService {
                         .build())
                 .collect(Collectors.toList());
 
-        BigDecimal platformFee = BigDecimal.ZERO;
-        BigDecimal netRevenue  = o.getFinalAmount();
+        // ── Tính platformFee & netRevenue một cách an toàn ─────────────────────
+        BigDecimal finalAmount = o.getFinalAmount() != null ? o.getFinalAmount() : BigDecimal.ZERO;
+        BigDecimal platformFee = o.getPlatformFeeAmount() != null
+                ? o.getPlatformFeeAmount()
+                : BigDecimal.ZERO;
 
-        if (o.getOrderSource() == OrderSource.SHOPEE_FOOD
-                || o.getOrderSource() == OrderSource.GRAB_FOOD) {
+        BigDecimal netRevenue = finalAmount.subtract(platformFee);   // mặc định dùng snapshot
+
+        // Chỉ tính lại nếu chưa có snapshot (trường hợp cũ hoặc lỗi dữ liệu)
+        if (platformFee.compareTo(BigDecimal.ZERO) == 0
+                && (o.getOrderSource() == OrderSource.SHOPEE_FOOD
+                || o.getOrderSource() == OrderSource.GRAB_FOOD)) {
+
             PosStore store = posStoreRepo.findById(o.getStore().getId()).orElse(null);
             if (store != null) {
                 BigDecimal rate = o.getOrderSource() == OrderSource.SHOPEE_FOOD
-                        ? store.getShopeeRate() : store.getGrabRate();
-                platformFee = o.getFinalAmount()
-                        .multiply(rate)
-                        .setScale(0, RoundingMode.HALF_UP);
-                netRevenue  = o.getFinalAmount().subtract(platformFee);
+                        ? store.getShopeeRate()
+                        : store.getGrabRate();
+
+                if (rate != null && rate.compareTo(BigDecimal.ZERO) > 0) {
+                    platformFee = finalAmount
+                            .multiply(rate)
+                            .setScale(0, RoundingMode.HALF_UP);
+                    netRevenue = finalAmount.subtract(platformFee);
+                }
             }
         }
+
+        // Bảo vệ thêm một lần nữa (phòng trường hợp null từ DB)
+        if (netRevenue == null) netRevenue = finalAmount;
+
+        BigDecimal eVoucherDisc = o.getEVoucherDiscountAmount() != null
+                ? o.getEVoucherDiscountAmount() : BigDecimal.ZERO;
+
+        BigDecimal rawDiscount = o.getDiscountAmount() != null
+                ? o.getDiscountAmount() : BigDecimal.ZERO;
+
+        // Discount thuần (không bao gồm eVoucher) để hiển thị riêng
+        BigDecimal displayDiscount = rawDiscount.subtract(eVoucherDisc).max(BigDecimal.ZERO);
 
         return PosOrderResponse.builder()
                 .id(o.getId())
@@ -1685,17 +1908,20 @@ public class PosService {
                 .staffName(o.getShift().getStaffName())
                 .orderSource(o.getOrderSource())
                 .status(o.getStatus())
-                .totalAmount(o.getTotalAmount())
-                .discountAmount(o.getDiscountAmount())   // ← THÊM field này
-                .finalAmount(o.getFinalAmount())
-                .totalVat(o.getTotalVatAmount())
+                .appOrderCode(o.getAppOrderCode())
+                .totalAmount(o.getTotalAmount() != null ? o.getTotalAmount() : BigDecimal.ZERO)
+                .finalAmount(finalAmount)
+                .totalVat(o.getTotalVatAmount() != null ? o.getTotalVatAmount() : BigDecimal.ZERO)
                 .paymentMethod(o.getPaymentMethod())
                 .note(o.getNote())
                 .createdAt(o.getCreatedAt())
                 .updatedAt(o.getUpdatedAt())
                 .items(items)
-                .platformFee(o.getPlatformFeeAmount())
-                .platformRate(o.getPlatformRate())
+                .platformFee(platformFee)           // dùng snapshot ưu tiên
+                .platformRate(o.getPlatformRate() != null ? o.getPlatformRate() : BigDecimal.ZERO)
+                .discountAmount(displayDiscount)          // ← chỉ discount thuần
+                .eVoucherCode(o.getEVoucherCode())        // ← THÊM
+                .eVoucherDiscountAmount(eVoucherDisc)     // ← THÊM
                 .netRevenue(netRevenue)
                 .build();
     }

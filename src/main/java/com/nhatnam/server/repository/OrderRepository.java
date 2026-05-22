@@ -37,4 +37,15 @@ public interface OrderRepository extends JpaRepository<Order, Long> {
     // Nếu bạn muốn dùng @Query để tối ưu hoặc thêm join fetch
     @Query("SELECT COUNT(o) FROM Order o WHERE o.createdAt BETWEEN :start AND :end")
     long countByCreatedAtBetween(@Param("start") Long start, @Param("end") Long end);
+
+    @Query("""
+    SELECT DISTINCT o FROM Order o
+    LEFT JOIN FETCH o.orderItems oi
+    WHERE o.createdAt BETWEEN :fromTs AND :toTs
+    AND o.status = 'COMPLETED'
+    ORDER BY o.createdAt ASC
+""")
+    List<Order> findCompletedWithIngredientsBetween(
+            @Param("fromTs") long fromTs,
+            @Param("toTs")   long toTs);
 }
