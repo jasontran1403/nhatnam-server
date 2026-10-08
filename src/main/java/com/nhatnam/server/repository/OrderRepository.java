@@ -14,8 +14,78 @@ import java.util.Optional;
 
 @Repository
 public interface OrderRepository extends JpaRepository<Order, Long> {
+    @Query("""
+    SELECT o FROM Order o
+    WHERE o.status NOT IN ('DELETED')
+      AND o.createdAt BETWEEN :fromTs AND :toTs
+      AND (:q IS NULL OR :q = '' OR
+           o.orderCode    LIKE %:q% OR
+           o.customerName LIKE %:q% OR
+           o.customerPhone LIKE %:q%)
+    ORDER BY o.createdAt DESC
+""")
+    Page<Order> searchAll(
+            @Param("fromTs") Long fromTs,
+            @Param("toTs")   Long toTs,
+            @Param("q")      String q,
+            Pageable pageable);
+
+    @Query("""
+    SELECT o FROM Order o
+    WHERE o.user.id = :userId
+      AND o.status NOT IN ('DELETED')
+      AND o.createdAt BETWEEN :fromTs AND :toTs
+      AND (:q IS NULL OR :q = '' OR
+           o.orderCode    LIKE %:q% OR
+           o.customerName LIKE %:q% OR
+           o.customerPhone LIKE %:q%)
+    ORDER BY o.createdAt DESC
+""")
+    Page<Order> searchByUser(
+            @Param("userId") Long userId,
+            @Param("fromTs")  Long fromTs,
+            @Param("toTs")    Long toTs,
+            @Param("q")       String q,
+            Pageable pageable);
 
     Optional<Order> findByOrderCode(String orderCode);
+
+    Optional<Order> findByInvoiceToken(String invoiceToken);
+
+    /** Tra ngược từ số hóa đơn — dùng để biết hóa đơn thuộc dải nào khi lấy PDF/XML */
+    @Query("SELECT o FROM Order o WHERE o.eInvoiceNo = :invoiceNo")
+    Optional<Order> findByEInvoiceNo(@Param("invoiceNo") String invoiceNo);
+
+    /**
+     * Danh sách đơn sỉ/lẻ dùng cho màn hình xuất hóa đơn điện tử (ACCOUNTANT).
+     * Bỏ qua đơn đã hủy / thất bại.
+     * :type  — lọc theo loại đơn (SI / LE ...), null = tất cả.
+     * :q     — tìm theo mã đơn / tên KH / SĐT / MST, null = tất cả.
+     */
+    @Query("""
+    SELECT o FROM Order o
+    WHERE o.createdAt BETWEEN :fromTs AND :toTs
+      AND o.status NOT IN (com.nhatnam.server.enumtype.OrderStatus.CANCELLED,
+                           com.nhatnam.server.enumtype.OrderStatus.FAILED)
+      AND (:type IS NULL OR :type = '' OR o.type = :type)
+      AND (:q IS NULL OR :q = '' OR
+           o.orderCode     LIKE %:q% OR
+           o.customerName  LIKE %:q% OR
+           o.customerPhone LIKE %:q% OR
+           o.companyName   LIKE %:q% OR
+           o.taxCode       LIKE %:q%)
+    ORDER BY o.createdAt DESC
+""")
+    Page<Order> findForEInvoice(
+            @Param("fromTs") Long fromTs,
+            @Param("toTs")   Long toTs,
+            @Param("type")   String type,
+            @Param("q")      String q,
+            Pageable pageable);
+
+    /** Các loại đơn (type) đang tồn tại — dùng đổ dropdown filter */
+    @Query("SELECT DISTINCT o.type FROM Order o WHERE o.type IS NOT NULL AND o.type <> ''")
+    List<String> findDistinctTypes();
 
     List<Order> findByUserIdOrderByCreatedAtDesc(Long userId);
 

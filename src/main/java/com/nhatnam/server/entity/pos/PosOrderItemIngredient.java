@@ -74,8 +74,22 @@ public class PosOrderItemIngredient {
     @Convert(converter = BigDecimalListConverter.class)
     private List<BigDecimal> unitWeights;
 
+    /**
+     * Giá addon GỐC lúc bán (giá khách nhìn thấy / giá niêm yết trên app).
+     * Tương đương {@code PosOrderItem.basePrice} của món chính.
+     */
     @Column(name = "addon_price_snapshot", precision = 10, scale = 2)
     private BigDecimal addonPriceSnapshot;
+
+    /**
+     * Giá addon THỰC NHẬN sau khi trừ giảm giá app + phí sàn (thuế/phí).
+     * Tương đương {@code PosOrderItem.finalUnitPrice} của món chính.
+     *
+     * Đơn offline: = addonPriceSnapshot.
+     * Đơn app    : = (addonPriceSnapshot - phần giảm phân bổ) × (1 - platformRate).
+     */
+    @Column(name = "addon_price_net", precision = 15, scale = 2)
+    private BigDecimal addonPriceNet;
 
     /**
      * Tổng lượng trừ kho = sum(unitWeights) nếu có, hoặc selectedCount × defaultDeductPerUnit.

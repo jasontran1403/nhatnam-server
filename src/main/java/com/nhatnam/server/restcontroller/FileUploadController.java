@@ -2,7 +2,7 @@ package com.nhatnam.server.restcontroller;
 
 import com.nhatnam.server.dto.response.ApiResponse;
 import com.nhatnam.server.enumtype.StatusCode;
-import com.nhatnam.server.service.FileStorageService;
+import com.nhatnam.server.service.POSFileStorageService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.log4j.Log4j2;
 import org.springframework.http.MediaType;
@@ -21,7 +21,7 @@ import java.util.*;
 @PreAuthorize("hasAnyRole('SELLER', 'ADMIN', 'POS')")
 public class FileUploadController {
 
-    private final FileStorageService fileStorageService;
+    private final POSFileStorageService fileStorageService;
 
     // Helper: build response map
     private Map<String, String> buildResult(String imageUrl) {

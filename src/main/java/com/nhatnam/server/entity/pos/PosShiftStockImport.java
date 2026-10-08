@@ -1,6 +1,7 @@
 package com.nhatnam.server.entity.pos;
 
 import jakarta.persistence.*;
+import java.math.BigDecimal;
 import lombok.*;
 
 @Entity
@@ -29,8 +30,8 @@ public class PosShiftStockImport {
     @Column(name = "unit", length = 50)
     private String unit;
 
-    @Column(name = "unit_per_pack")
-    private Integer unitPerPack;
+    @Column(name = "unit_per_pack", precision = 12, scale = 3)
+    private BigDecimal unitPerPack;
 
     @Column(name = "pack_qty", nullable = false)
     private Integer packQty;

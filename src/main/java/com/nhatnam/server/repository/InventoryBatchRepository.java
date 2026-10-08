@@ -12,6 +12,18 @@ import java.util.List;
 import java.util.Optional;
 
 public interface InventoryBatchRepository extends JpaRepository<InventoryBatch, Long> {
+
+    // ── Legacy: batch không có warehouse (seller1, seller2) ──────────────
+    Page<InventoryBatch> findByWarehouseIsNullOrderByCreatedAtDesc(Pageable pageable);
+    Page<InventoryBatch> findByWarehouseIsNullAndActionOrderByCreatedAtDesc(
+            InventoryAction action, Pageable pageable);
+
+    // ── Kho mới: filter theo warehouse_id ────────────────────────────────
+    Page<InventoryBatch> findByWarehouseIdOrderByCreatedAtDesc(
+            Long warehouseId, Pageable pageable);
+    Page<InventoryBatch> findByWarehouseIdAndActionOrderByCreatedAtDesc(
+            Long warehouseId, InventoryAction action, Pageable pageable);
+
     @Query("""
     SELECT DISTINCT b FROM InventoryBatch b
     LEFT JOIN FETCH b.logs l

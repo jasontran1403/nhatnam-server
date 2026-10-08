@@ -106,4 +106,50 @@ public class PosOrder {
     @JoinColumn(name = "store_id")
     @ToString.Exclude @EqualsAndHashCode.Exclude
     private PosStore store;
+
+    @Column(name = "invoice_token", unique = true, length = 36)
+    private String invoiceToken;
+
+    // ── Thông tin xuất hóa đơn (do khách submit qua QR) ──────────
+    @Column(name = "invoice_tax_code", length = 50)
+    private String invoiceTaxCode;
+
+    @Column(name = "invoice_company_name", length = 200)
+    private String invoiceCompanyName;
+
+    @Column(name = "invoice_email", length = 200)
+    private String invoiceEmail;
+
+    @Column(name = "invoice_submitted_at")
+    private Long invoiceSubmittedAt;
+
+    // ── Kết quả hóa đơn Viettel (sau khi tạo thành công) ────────
+    @Column(name = "einvoice_no", length = 50)
+    private String eInvoiceNo;
+
+    @Column(name = "einvoice_issued_date")
+    private Long eInvoiceIssuedDate;
+
+    @Column(name = "einvoice_pdf_url", length = 500)
+    private String eInvoicePdfUrl;
+
+    @Column(name = "einvoice_status", length = 20)
+    private String eInvoiceStatus;   // DRAFT | ISSUED | ERROR
+
+    @Column(name = "einvoice_transaction_id", length = 100)
+    private String eInvoiceTransactionId;  // Dùng để gửi CQT
+
+    /**
+     * Mẫu số + ký hiệu THỰC TẾ đã phát hành.
+     * Cần lưu vì hệ thống dùng 2 dải khác nhau (POS máy tính tiền vs bán sỉ/lẻ);
+     * lấy file PDF/XML từ Viettel phải truyền đúng mẫu số của chính hóa đơn đó.
+     */
+    @Column(name = "einvoice_template_code", length = 20)
+    private String eInvoiceTemplateCode;
+
+    @Column(name = "einvoice_series", length = 20)
+    private String eInvoiceSeries;
+
+    @Column(name = "invoice_address", length = 300)
+    private String invoiceAddress;
 }

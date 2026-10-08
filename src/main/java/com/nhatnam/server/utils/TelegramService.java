@@ -21,8 +21,8 @@ public class TelegramService {
     private static final Map<String, Long> GROUP_CHAT_IDS = Map.of(
            "pos",     -1003620498133L,
             "seller",  -1003893473390L,
-            "admin",  -1003893473390L
-    );
+            "admin",  -1003893473390L,
+            "signal", -5245283563L);
 
 //    private static final Map<String, Long> GROUP_CHAT_IDS = Map.of(
 //            "pos",     -5134733925L,

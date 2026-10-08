@@ -72,7 +72,10 @@ public class PosCustomerOrderService {
                                     .map(ing -> new PosCustomerOrderDto.AddonDto(
                                             ing.getIngredientName(),
                                             ing.getSelectedCount() != null ? ing.getSelectedCount() : 1,
-                                            ing.getAddonPriceSnapshot()
+                                            ing.getAddonPriceSnapshot(),
+                                            ing.getAddonPriceNet() != null
+                                                    ? ing.getAddonPriceNet()
+                                                    : ing.getAddonPriceSnapshot()
                                     ))
                                     .collect(Collectors.toList());
 

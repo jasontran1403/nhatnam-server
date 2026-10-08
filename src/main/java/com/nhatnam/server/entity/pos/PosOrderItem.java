@@ -74,6 +74,35 @@ public class PosOrderItem {
     @Column(name = "addon_amount", precision = 15, scale = 2)
     private BigDecimal addonAmount = BigDecimal.ZERO;
 
+    /**
+     * Ý 2: order item bán xé lẻ. Mặc định false → hàng cũ không đổi.
+     *
+     * Quy ước dòng xé lẻ:
+     *  - quantity           = 1 (mỗi lần xé lẻ là 1 dòng độc lập, không gộp)
+     *  - finalUnitPrice     = giá tay user nhập cho cả lần xé đó
+     *  - looseQuantity      = số lượng thực theo đơn vị nhỏ nhất (2 miếng / 0.25 kg)
+     *  - PosOrderItemIngredient.quantityUsed = looseQuantity (dùng cho báo cáo kho)
+     */
+    @Column(name = "loose_sale")
+    @Builder.Default
+    private Boolean looseSale = false;
+
+    /** Ý 2: số lượng xé lẻ theo đơn vị nhỏ nhất (2 miếng, 0.25 kg...). */
+    @Column(name = "loose_quantity", precision = 12, scale = 3)
+    private BigDecimal looseQuantity;
+
+    /** Ý 2: đơn vị nhỏ nhất khi xé lẻ, snapshot lúc bán ("Miếng" / "Kg"). */
+    @Column(name = "loose_unit", length = 30)
+    private String looseUnit;
+
+    /** Ý 2: đơn vị chính của nguyên liệu, snapshot lúc bán ("Túi" / "Kg"). */
+    @Column(name = "loose_main_unit", length = 30)
+    private String looseMainUnit;
+
+    /** Ý 2: nguyên liệu được xé lẻ trong dòng này. */
+    @Column(name = "loose_ingredient_id")
+    private Long looseIngredientId;
+
     // NOTE: Các field variant_id / variant_name / variant_min_select / variant_max_select
     // đã được XÓA — thông tin variant giờ nằm trong PosOrderItemIngredient.variantId/variantGroupName
     // (mỗi order item có thể có nhiều variant group)

@@ -15,6 +15,7 @@ import com.nhatnam.server.service.OrderService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -44,6 +45,29 @@ public class OrderServiceImpl implements OrderService {
     private final ProductIngredientRepository   productIngredientRepository;
     private final CustomerRepository            customerRepository;
     private final InventoryLogRepository        inventoryLogRepository;
+    private final SellerWarehouseRepository      sellerWarehouseRepository;
+    private final WarehouseIngredientStockRepository warehouseStockRepository;
+    private final InventoryCostLotService        costLotService;
+
+    @Override
+    public Page<OrderResponse> getSaleOrderHistoryAll(
+            Long fromTs, Long toTs, String q, int page, int size) {
+        String query   = (q == null || q.isBlank()) ? null : q.trim();
+        Pageable paged = PageRequest.of(page, size);
+        return orderRepository.searchAll(fromTs, toTs, query, paged)
+                .map(this::mapToResponse);
+    }
+
+    @Override
+    public Page<OrderResponse> getSaleOrderHistory(
+            Long userId, Long fromTs, Long toTs,
+            String q, int page, int size) {
+        String query   = (q == null || q.isBlank()) ? null : q.trim();
+        Pageable paged = PageRequest.of(page, size);
+        return orderRepository
+                .searchByUser(userId, fromTs, toTs, query, paged)
+                .map(this::mapToResponse);
+    }
 
     // ════════════════════════════════════════════════════════════════
     // ADMIN: danh sách đơn hàng
@@ -80,6 +104,17 @@ public class OrderServiceImpl implements OrderService {
                             .ingredientImageUrl(ii.getIngredientImageUrl())
                             .quantityUsed(ii.getQuantityUsed())
                             .unit(ii.getUnit())
+                            .costPrice(ii.getCostPrice())
+                            .costAmount(ii.getCostAmount())
+                            .lots(ii.getLots() == null ? java.util.List.of()
+                                    : ii.getLots().stream()
+                                    .map(l -> IngredientSnapshot.LotSnapshot.builder()
+                                            .costLotId(l.getCostLotId())
+                                            .sourceRef(l.getSourceRef())
+                                            .unitCost(l.getUnitCost())
+                                            .quantity(l.getQuantity())
+                                            .build())
+                                    .collect(Collectors.toList()))
                             .build())
                     .collect(Collectors.toList());
 
@@ -132,7 +167,6 @@ public class OrderServiceImpl implements OrderService {
     @Override
     @Transactional
     public OrderResponse createOrder(CreateOrderRequest request, Long userId) {
-
         long now = System.currentTimeMillis();
 
         String companyPhone   = null;
@@ -248,23 +282,72 @@ public class OrderServiceImpl implements OrderService {
             subtotal = subtotal.add(item.getSubtotal());
         }
 
-        // Trừ kho
+        // Trừ kho — warehouse-aware
+        // Nếu user có SellerWarehouse mapping → dùng WarehouseIngredientStock
+        // Nếu không (legacy) → dùng ingredient.stockQuantity
+        com.nhatnam.server.entity.Warehouse warehouse =
+                sellerWarehouseRepository.findBySellerId(userId)
+                        .map(SellerWarehouse::getWarehouse)
+                        .orElse(null);
+
+        // Gom các dòng nguyên liệu theo ingredientId (giữ thứ tự) để phân bổ FIFO
+        // sau khi trừ kho tổng hợp.
+        Map<Long, List<OrderItemIngredient>> linesByIngredient = new LinkedHashMap<>();
+        for (OrderItem oi : orderItems) {
+            for (OrderItemIngredient oii : oi.getOrderItemIngredients()) {
+                linesByIngredient
+                        .computeIfAbsent(oii.getIngredientId(), k -> new ArrayList<>())
+                        .add(oii);
+            }
+        }
+
         List<InventoryLog> logs = new ArrayList<>();
         for (Map.Entry<Long, BigDecimal> entry : ingredientUsageMap.entrySet()) {
             Ingredient ing = ingredientRepository.findById(entry.getKey())
                     .orElseThrow(() -> new RuntimeException("Ingredient not found: " + entry.getKey()));
             BigDecimal needed = entry.getValue();
 
-            if (ing.getStockQuantity().compareTo(needed) < 0)
-                throw new RuntimeException(String.format(
-                        "Không đủ tồn kho '%s' (còn: %s, cần: %s %s)",
-                        ing.getName(), ing.getStockQuantity(), needed, ing.getUnit()));
+            BigDecimal before;
+            BigDecimal after;
 
-            BigDecimal before = ing.getStockQuantity();
-            BigDecimal after  = before.subtract(needed);
-            ing.setStockQuantity(after);
-            ing.setUpdatedAt(now);
-            ingredientRepository.save(ing);
+            if (warehouse == null) {
+                // Legacy: dùng ingredient.stockQuantity
+                before = ing.getStockQuantity();
+                if (before.compareTo(needed) < 0)
+                    throw new RuntimeException(String.format(
+                            "Không đủ tồn kho '%s' (còn: %s, cần: %s %s)",
+                            ing.getName(), before, needed, ing.getUnit()));
+                after = before.subtract(needed);
+                ing.setStockQuantity(after);
+                ing.setUpdatedAt(now);
+                ingredientRepository.save(ing);
+            } else {
+                // Kho mới: dùng WarehouseIngredientStock
+                com.nhatnam.server.entity.WarehouseIngredientStock stock =
+                        warehouseStockRepository
+                                .findByWarehouseIdAndIngredientIdForUpdate(warehouse.getId(), ing.getId())
+                                .orElseGet(() -> WarehouseIngredientStock.builder()
+                                        .warehouse(warehouse).ingredient(ing)
+                                        .stockQuantity(BigDecimal.ZERO).updatedAt(now).build());
+                before = stock.getStockQuantity();
+                if (before.compareTo(needed) < 0)
+                    throw new RuntimeException(String.format(
+                            "Không đủ tồn kho '%s' (còn: %s, cần: %s %s)",
+                            ing.getName(), before, needed, ing.getUnit()));
+                after = before.subtract(needed);
+                stock.setStockQuantity(after);
+                stock.setUpdatedAt(now);
+                warehouseStockRepository.save(stock);
+            }
+
+            // ── FIFO: trừ theo lô cũ trước & phân bổ giá vốn về từng dòng ──────
+            List<InventoryCostLotService.LotAllocation> allocs =
+                    costLotService.consumeFifo(ing, warehouse, before, needed, now);
+            distributeAllocationsToLines(linesByIngredient.get(ing.getId()), allocs);
+            costLotService.recomputeAvgCost(ing, warehouse, now);
+
+            BigDecimal unitCost = costLotService.weightedUnitCost(allocs);
+            BigDecimal lineAmt  = costLotService.totalAmount(allocs);
 
             logs.add(InventoryLog.builder()
                     .ingredient(ing).order(savedOrder)
@@ -272,7 +355,10 @@ public class OrderServiceImpl implements OrderService {
                     .quantity(needed.negate())
                     .quantityBefore(before).quantityAfter(after)
                     .reason(savedOrder.getOrderCode())
+                    .unitPrice(unitCost)       // giá vốn FIFO bình quân
+                    .lineAmount(lineAmt)       // tổng giá vốn theo FIFO
                     .user(user).createdAt(now)
+                    .warehouse(warehouse)
                     .build());
         }
 
@@ -476,8 +562,15 @@ public class OrderServiceImpl implements OrderService {
         if (!vis.isEmpty()) {
             for (VariantIngredient vi : vis) {
                 Ingredient ing = vi.getIngredient();
-                // VariantIngredient chưa có quantity riêng → dùng 1.0 * orderQty
                 BigDecimal usedQty = quantity;
+
+                // ── Lấy giá vốn hiện tại của nguyên liệu ──
+                BigDecimal costPrice = ing.getCostPrice() != null
+                        ? ing.getCostPrice()
+                        : BigDecimal.ZERO;
+                BigDecimal costAmount = costPrice.multiply(usedQty)
+                        .setScale(2, RoundingMode.HALF_UP);
+
                 usageMap.merge(ing.getId(), usedQty, BigDecimal::add);
                 result.add(OrderItemIngredient.builder()
                         .orderItem(orderItem)
@@ -486,10 +579,12 @@ public class OrderServiceImpl implements OrderService {
                         .ingredientImageUrl(ing.getImageUrl())
                         .quantityUsed(usedQty)
                         .unit(ing.getUnit())
+                        .costPrice(costPrice)      // ← THÊM
+                        .costAmount(costAmount)    // ← THÊM
                         .build());
             }
         } else {
-            // Direct product ingredients — nhân quantity của ingredient với số lượng order
+            // Direct product ingredients
             for (ProductIngredient pi : product.getProductIngredients()) {
                 Ingredient ing = pi.getIngredient();
                 BigDecimal ingQtyPerUnit = pi.getQuantity() != null
@@ -497,6 +592,14 @@ public class OrderServiceImpl implements OrderService {
                         ? pi.getQuantity() : BigDecimal.ONE;
                 BigDecimal usedQty = ingQtyPerUnit.multiply(quantity)
                         .setScale(3, RoundingMode.HALF_UP);
+
+                // ── Lấy giá vốn hiện tại của nguyên liệu ──
+                BigDecimal costPrice = ing.getCostPrice() != null
+                        ? ing.getCostPrice()
+                        : BigDecimal.ZERO;
+                BigDecimal costAmount = costPrice.multiply(usedQty)
+                        .setScale(2, RoundingMode.HALF_UP);
+
                 usageMap.merge(ing.getId(), usedQty, BigDecimal::add);
                 result.add(OrderItemIngredient.builder()
                         .orderItem(orderItem)
@@ -505,11 +608,14 @@ public class OrderServiceImpl implements OrderService {
                         .ingredientImageUrl(ing.getImageUrl())
                         .quantityUsed(usedQty)
                         .unit(ing.getUnit())
+                        .costPrice(costPrice)      // ← THÊM
+                        .costAmount(costAmount)    // ← THÊM
                         .build());
             }
         }
         return result;
     }
+
 
     // ════════════════════════════════════════════════════════════════
     // MAP TO RESPONSE
@@ -630,6 +736,172 @@ public class OrderServiceImpl implements OrderService {
         order.setStatus(OrderStatus.CANCELLED);
         order.setUpdatedAt(System.currentTimeMillis());
         return mapToResponse(orderRepository.save(order));
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // FIFO: phân bổ allocation (theo lô) về từng dòng nguyên liệu của đơn
+    // ════════════════════════════════════════════════════════════════
+    private void distributeAllocationsToLines(
+            List<OrderItemIngredient> lines,
+            List<InventoryCostLotService.LotAllocation> allocs) {
+
+        if (lines == null || lines.isEmpty() || allocs == null || allocs.isEmpty()) return;
+
+        int ai = 0;
+        BigDecimal allocRemaining = allocs.get(0).quantity();
+
+        for (OrderItemIngredient line : lines) {
+            BigDecimal need = line.getQuantityUsed() != null
+                    ? line.getQuantityUsed() : BigDecimal.ZERO;
+            List<OrderItemIngredientLot> lotRows = new ArrayList<>();
+            BigDecimal costAmt = BigDecimal.ZERO;
+
+            while (need.signum() > 0 && ai < allocs.size()) {
+                InventoryCostLotService.LotAllocation a = allocs.get(ai);
+                BigDecimal take = allocRemaining.min(need);
+                if (take.signum() > 0) {
+                    lotRows.add(OrderItemIngredientLot.builder()
+                            .orderItemIngredient(line)
+                            .costLotId(a.lotId())
+                            .sourceRef(a.sourceRef())
+                            .unitCost(a.unitCost())
+                            .quantity(take)
+                            .build());
+                    costAmt = costAmt.add(a.unitCost().multiply(take));
+                    need = need.subtract(take);
+                    allocRemaining = allocRemaining.subtract(take);
+                }
+                if (allocRemaining.signum() <= 0) {
+                    ai++;
+                    if (ai < allocs.size()) allocRemaining = allocs.get(ai).quantity();
+                }
+            }
+
+            line.setLots(lotRows);
+            BigDecimal costAmount = costAmt.setScale(2, RoundingMode.HALF_UP);
+            line.setCostAmount(costAmount);
+            BigDecimal q = line.getQuantityUsed();
+            line.setCostPrice((q != null && q.signum() > 0)
+                    ? costAmount.divide(q, 2, RoundingMode.HALF_UP)
+                    : BigDecimal.ZERO);
+        }
+    }
+
+    // ════════════════════════════════════════════════════════════════
+    // SUPER ADMIN: HỦY ĐƠN HÀNG (lịch sử đơn sỉ/lẻ)
+    //   1) Cộng lại tồn kho
+    //   2) Cộng lại số lượng vào ĐÚNG lô giá vốn (FIFO)
+    // ════════════════════════════════════════════════════════════════
+    @Override
+    @Transactional
+    public OrderResponse cancelSaleOrder(Long orderId) {
+        long now = System.currentTimeMillis();
+
+        Order order = orderRepository.findById(orderId)
+                .orElseThrow(() -> new RuntimeException("Không tìm thấy đơn hàng: " + orderId));
+
+        if (order.getStatus() == OrderStatus.CANCELLED)
+            throw new RuntimeException("Đơn hàng đã được hủy trước đó.");
+
+        // Kho nơi đơn đã trừ (theo seller tạo đơn) — giống lúc tạo đơn
+        Long sellerId = order.getUser() != null ? order.getUser().getId() : null;
+        com.nhatnam.server.entity.Warehouse warehouse = sellerId == null ? null :
+                sellerWarehouseRepository.findBySellerId(sellerId)
+                        .map(SellerWarehouse::getWarehouse)
+                        .orElse(null);
+
+        // Gom số lượng cần cộng trả theo từng nguyên liệu (để cộng tồn + ghi log)
+        Map<Long, BigDecimal> restoreQtyByIng = new LinkedHashMap<>();
+
+        for (OrderItem item : order.getOrderItems()) {
+            for (OrderItemIngredient oii : item.getOrderItemIngredients()) {
+                Long ingId = oii.getIngredientId();
+                BigDecimal used = oii.getQuantityUsed() != null
+                        ? oii.getQuantityUsed() : BigDecimal.ZERO;
+                if (ingId == null || used.signum() <= 0) continue;
+
+                restoreQtyByIng.merge(ingId, used, BigDecimal::add);
+
+                Ingredient ing = ingredientRepository.findById(ingId).orElse(null);
+                if (ing == null) continue;
+
+                List<OrderItemIngredientLot> lots = oii.getLots();
+                if (lots != null && !lots.isEmpty()) {
+                    // Cộng trả về ĐÚNG từng lô giá vốn (ví dụ 100@1.000 + 20@1.200)
+                    for (OrderItemIngredientLot lot : lots) {
+                        costLotService.restoreToLot(
+                                lot.getCostLotId(), ing, warehouse,
+                                lot.getUnitCost(), lot.getQuantity(),
+                                "CANCEL-" + order.getOrderCode(), now);
+                    }
+                } else {
+                    // Đơn cũ (trước khi có dữ liệu lô) → tạo lại 1 lô theo giá vốn snapshot
+                    costLotService.restoreToLot(
+                            null, ing, warehouse,
+                            oii.getCostPrice(), used,
+                            "CANCEL-" + order.getOrderCode(), now);
+                }
+            }
+        }
+
+        // Cộng lại tồn kho + ghi log điều chỉnh + tính lại giá vốn bình quân
+        List<InventoryLog> logs = new ArrayList<>();
+        for (Map.Entry<Long, BigDecimal> e : restoreQtyByIng.entrySet()) {
+            Ingredient ing = ingredientRepository.findById(e.getKey()).orElse(null);
+            if (ing == null) continue;
+            BigDecimal qty = e.getValue();
+
+            BigDecimal before = getStockForCancel(ing, warehouse);
+            BigDecimal after  = before.add(qty);
+            addStockForCancel(ing, warehouse, after, now);
+
+            costLotService.recomputeAvgCost(ing, warehouse, now);
+
+            logs.add(InventoryLog.builder()
+                    .ingredient(ing).order(order)
+                    .action(InventoryAction.ADJUST)
+                    .quantity(qty)               // dương = cộng trả
+                    .quantityBefore(before).quantityAfter(after)
+                    .reason("HỦY ĐƠN " + order.getOrderCode())
+                    .user(order.getUser())
+                    .warehouse(warehouse)
+                    .createdAt(now)
+                    .build());
+        }
+        if (!logs.isEmpty()) inventoryLogRepository.saveAll(logs);
+
+        order.setStatus(OrderStatus.CANCELLED);
+        order.setUpdatedAt(now);
+        Order saved = orderRepository.save(order);
+        return mapToResponse(saved);
+    }
+
+    private BigDecimal getStockForCancel(
+            Ingredient ing, com.nhatnam.server.entity.Warehouse warehouse) {
+        if (warehouse == null) return ing.getStockQuantity();
+        return warehouseStockRepository
+                .findByWarehouseIdAndIngredientId(warehouse.getId(), ing.getId())
+                .map(WarehouseIngredientStock::getStockQuantity)
+                .orElse(BigDecimal.ZERO);
+    }
+
+    private void addStockForCancel(
+            Ingredient ing, com.nhatnam.server.entity.Warehouse warehouse,
+            BigDecimal newQty, long now) {
+        if (warehouse == null) {
+            ing.setStockQuantity(newQty);
+            ing.setUpdatedAt(now);
+            ingredientRepository.save(ing);
+        } else {
+            WarehouseIngredientStock stock = warehouseStockRepository
+                    .findByWarehouseIdAndIngredientId(warehouse.getId(), ing.getId())
+                    .orElseGet(() -> WarehouseIngredientStock.builder()
+                            .warehouse(warehouse).ingredient(ing)
+                            .stockQuantity(BigDecimal.ZERO).updatedAt(now).build());
+            stock.setStockQuantity(newQty);
+            stock.setUpdatedAt(now);
+            warehouseStockRepository.save(stock);
+        }
     }
 
     // ── Helpers ──────────────────────────────────────────────────────

@@ -32,6 +32,16 @@ public class Ingredient {
     @Column(name = "stock_quantity", nullable = false, columnDefinition = "DECIMAL(10,2)")
     private BigDecimal stockQuantity;
 
+    /**
+     * Giá vốn trung bình (weighted average) trên 1 đơn vị tính, làm tròn đến đồng.
+     * - Seller legacy (không có warehouse mapping): đây là giá vốn chính thức.
+     * - Seller có warehouse: đây là giá vốn "đại diện" (mirror của lần nhập gần nhất)
+     *   để phục vụ báo cáo global; giá vốn chuẩn theo kho nằm ở WarehouseIngredientStock.
+     */
+    @Column(name = "cost_price", precision = 15, scale = 2)
+    @Builder.Default
+    private BigDecimal costPrice = BigDecimal.ZERO;
+
     @Column(name = "created_at", nullable = false)
     private Long createdAt;
 

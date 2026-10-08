@@ -46,6 +46,8 @@ public class PosController {
     private final PosDiscountProgramRepository  programRepo;    // ← THÊM
     private final PosCustomerService posCustomerService;
     private final PosCustomerRepository posCustomerRepo;
+    private final com.nhatnam.server.repository.pos.PosOrderRepository      posOrderRepo;
+    private final com.nhatnam.server.repository.pos.PosCreditNoteRepository posCreditNoteRepo;
     private final ShiftImageService shiftImageService;
 
     private static final String DELETE_ORDER_PASSCODE = "160625";
@@ -159,23 +161,39 @@ public class PosController {
 
     @GetMapping("/customers/search")
     public ResponseEntity<ApiResponse<List<Map<String, Object>>>> searchCustomers(
-            @RequestParam String q,
+            @RequestParam(name = "q",     required = false) String q,
+            @RequestParam(name = "phone", required = false) String phone,
             Authentication auth) {
         try {
             Long userId  = extractUserId(auth);
             Long storeId = extractStoreId(userId);
 
-            // Normalize phone nếu query trông như SĐT
-            String normalized = q.replaceAll("[\\s\\-]", "");
-            if (normalized.startsWith("+84")) normalized = "0" + normalized.substring(3);
-            else if (normalized.startsWith("84") && normalized.length() == 11)
-                normalized = "0" + normalized.substring(2);
+            // Nhận keyword từ 'q' (tìm theo tên/SĐT) hoặc 'phone' (tương thích cũ)
+            String raw = (q != null && !q.isBlank()) ? q
+                    : (phone != null ? phone : "");
+            String term = raw.trim();
+
+            // Chỉ normalize như SĐT khi keyword trông giống số điện thoại
+            // (chỉ gồm số / khoảng trắng / dấu + / gạch). Nếu là tên thì giữ nguyên.
+            String keyword = term;
+            if (!term.isEmpty() && term.matches("[0-9+\\-\\s]+")) {
+                String s = term.replaceAll("[\\s\\-]", "");
+                if (s.startsWith("+84")) s = "0" + s.substring(3);
+                else if (s.startsWith("84") && s.length() == 11) s = "0" + s.substring(2);
+                else if (!s.startsWith("0") && s.length() == 9)  s = "0" + s;
+                keyword = s;
+            }
+
+            Map<String, BigDecimal> spendByPhone   = _spendMap(storeId);
+            Map<Long, BigDecimal>   creditByCustId = _creditMap(storeId);
 
             List<Map<String, Object>> list = posCustomerRepo
-                    .searchByStoreId(storeId, normalized)
+                    .searchByStoreId(storeId, keyword)   // LIKE %keyword% trên phone HOẶC name
                     .stream()
                     .sorted((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()))
-                    .map(this::_toMap)
+                    .map(c -> _toMap(c,
+                            spendByPhone.getOrDefault(c.getPhone(), BigDecimal.ZERO),
+                            creditByCustId.getOrDefault(c.getId(), BigDecimal.ZERO)))
                     .toList();
 
             return ResponseEntity.ok(ApiResponse.success(list, "OK"));
@@ -189,10 +207,15 @@ public class PosController {
         var userId  = extractUserId(auth);
         var storeId = extractStoreId(userId);
 
+        Map<String, BigDecimal> spendByPhone   = _spendMap(storeId);
+        Map<Long, BigDecimal>   creditByCustId = _creditMap(storeId);
+
         var list = posCustomerRepo.findByStoreId(storeId)
                 .stream()
                 .sorted((a, b) -> b.getCreatedAt().compareTo(a.getCreatedAt()))
-                .map(this::_toMap)
+                .map(c -> _toMap(c,
+                        spendByPhone.getOrDefault(c.getPhone(), BigDecimal.ZERO),
+                        creditByCustId.getOrDefault(c.getId(), BigDecimal.ZERO)))
                 .toList();
 
         return ResponseEntity.ok(ApiResponse.success(list, "OK"));
@@ -259,7 +282,24 @@ public class PosController {
         }
     }
 
+    /** Dùng cho response 1 khách lẻ (tạo mới / lấy chi tiết) — tự tính spend & credit. */
     private Map<String, Object> _toMap(PosCustomer c) {
+        Long storeId = c.getStoreId();
+        BigDecimal lifetimeSpend = posOrderRepo
+                .sumLifetimeSpendByPhone(storeId, c.getPhone());
+        if (lifetimeSpend == null) lifetimeSpend = BigDecimal.ZERO;
+
+        BigDecimal availableCredit = accumulationService
+                .getActiveCreditNotes(c.getId(), storeId).stream()
+                .map(PosCreditNote::getRemainingAmount)
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        return _toMap(c, lifetimeSpend, availableCredit);
+    }
+
+    private Map<String, Object> _toMap(PosCustomer c,
+                                       BigDecimal lifetimeSpend,
+                                       BigDecimal availableCredit) {
         Map<String, Object> m = new LinkedHashMap<>();
         m.put("id",                   c.getId());
         m.put("phone",                c.getPhone());
@@ -268,7 +308,12 @@ public class PosController {
                 ? c.getCustomerType().name() : "KLE");
         m.put("customerTypeLabel", c.getCustomerType() != null
                 ? c.getCustomerType().getLabel() : "Khách lẻ");
-        m.put("totalSpend",           c.getTotalSpend());
+        // "đ chi tiêu" = tổng chi tiêu mọi thời điểm (tính từ đơn hàng thực)
+        m.put("totalSpend",           lifetimeSpend != null
+                ? lifetimeSpend : BigDecimal.ZERO);
+        // Số dư credit khả dụng hiện tại
+        m.put("availableCredit",      availableCredit != null
+                ? availableCredit : BigDecimal.ZERO);
         m.put("dateOfBirth",          c.getDateOfBirth());
         m.put("deliveryAddress",      c.getDeliveryAddress());
         m.put("referredByCustomerId", c.getReferredByCustomerId());
@@ -276,6 +321,29 @@ public class PosController {
         m.put("referredByPhone",      c.getReferredByPhone());
         m.put("createdAt",            c.getCreatedAt());
         return m;
+    }
+
+    /** Map SĐT → tổng chi tiêu (1 query cho cả store). */
+    private Map<String, BigDecimal> _spendMap(Long storeId) {
+        Map<String, BigDecimal> map = new java.util.HashMap<>();
+        for (Object[] row : posOrderRepo.sumLifetimeSpendByStore(storeId)) {
+            if (row[0] == null) continue;
+            map.put((String) row[0], (BigDecimal) row[1]);
+        }
+        return map;
+    }
+
+    /** Map customerId → số dư credit khả dụng (1 query cho cả store). */
+    private Map<Long, BigDecimal> _creditMap(Long storeId) {
+        Map<Long, BigDecimal> map = new java.util.HashMap<>();
+        var rows = posCreditNoteRepo.sumAvailableCreditByStore(storeId,
+                List.of(PosCreditNote.CreditNoteStatus.ACTIVE,
+                        PosCreditNote.CreditNoteStatus.PARTIALLY_USED));
+        for (Object[] row : rows) {
+            if (row[0] == null) continue;
+            map.put(((Number) row[0]).longValue(), (BigDecimal) row[1]);
+        }
+        return map;
     }
 
     @GetMapping("/customers/types")
@@ -597,6 +665,19 @@ public class PosController {
         }
     }
 
+    /** Cập nhật thứ tự (displayOrder) nhiều danh mục cùng lúc — kéo-thả ở POS. */
+    @PutMapping("/categories/reorder")
+    public ResponseEntity<ApiResponse<Object>> reorderCategories(
+            @RequestBody ReorderRequest req, Authentication auth) {
+        try {
+            Long storeId = extractStoreId(extractUserId(auth));
+            posService.reorderCategories(req, storeId);
+            return ResponseEntity.ok(ApiResponse.success(null, "Reordered"));
+        } catch (Exception e) {
+            return ResponseEntity.ok(ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
+        }
+    }
+
     @DeleteMapping("/categories/{id}")
     public ResponseEntity<ApiResponse<Object>> deleteCategory(@PathVariable Long id) {
         try {
@@ -665,6 +746,19 @@ public class PosController {
                     posService.updateIngredient(id, req), "Ingredient updated"));
         } catch (RuntimeException e) {
             return ResponseEntity.ok(ApiResponse.error(StatusCode.NOT_FOUND, e.getMessage()));
+        }
+    }
+
+    /** Cập nhật thứ tự (displayOrder) nhiều nguyên liệu cùng lúc — kéo-thả ở POS. */
+    @PutMapping("/ingredients/reorder")
+    public ResponseEntity<ApiResponse<Object>> reorderIngredients(
+            @RequestBody ReorderRequest req, Authentication auth) {
+        try {
+            Long storeId = extractStoreId(extractUserId(auth));
+            posService.reorderIngredients(req, storeId);
+            return ResponseEntity.ok(ApiResponse.success(null, "Reordered"));
+        } catch (Exception e) {
+            return ResponseEntity.ok(ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
         }
     }
 
@@ -756,6 +850,19 @@ public class PosController {
                     posService.updateProduct(id, req), "Product updated"));
         } catch (RuntimeException e) {
             return ResponseEntity.ok(ApiResponse.error(StatusCode.NOT_FOUND, e.getMessage()));
+        }
+    }
+
+    /** Cập nhật thứ tự (displayOrder) nhiều sản phẩm cùng lúc — kéo-thả ở POS. */
+    @PutMapping("/products/reorder")
+    public ResponseEntity<ApiResponse<Object>> reorderProducts(
+            @RequestBody ReorderRequest req, Authentication auth) {
+        try {
+            Long storeId = extractStoreId(extractUserId(auth));
+            posService.reorderProducts(req, storeId);
+            return ResponseEntity.ok(ApiResponse.success(null, "Reordered"));
+        } catch (Exception e) {
+            return ResponseEntity.ok(ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
         }
     }
 

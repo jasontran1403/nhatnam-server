@@ -44,10 +44,18 @@ public class PosAccumulationService {
     @Transactional
     public void recordSpend(Long customerId, Long storeId,
                             Long orderId, BigDecimal spendNet) {
-        if (spendNet == null || spendNet.compareTo(BigDecimal.ZERO) <= 0) return;
+        if (spendNet == null || spendNet.compareTo(BigDecimal.ZERO) <= 0) {
+            log.warn("[Accumulation] Bỏ qua orderId={} — spendNet không hợp lệ: {}",
+                    orderId, spendNet);
+            return;
+        }
 
         PosCustomer customer = customerRepo.findById(customerId).orElse(null);
-        if (customer == null) return;
+        if (customer == null) {
+            log.warn("[Accumulation] Bỏ qua orderId={} — không tìm thấy customerId={}",
+                    orderId, customerId);
+            return;
+        }
 
         String month = YearMonth.now(VN).format(MONTH_FMT);
         long   now   = System.currentTimeMillis();

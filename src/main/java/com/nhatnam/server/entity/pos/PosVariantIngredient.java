@@ -1,5 +1,6 @@
 package com.nhatnam.server.entity.pos;
 
+import com.nhatnam.server.enumtype.AppPlatform;
 import jakarta.persistence.*;
 import lombok.*;
 import java.math.BigDecimal;
@@ -53,4 +54,52 @@ public class PosVariantIngredient {
     @Column(name = "display_order")
     @Builder.Default
     private Integer displayOrder = 0;
+
+    // ─── Giá addon RIÊNG của nguyên liệu này TRONG món này ──────────────────
+    // Mỗi kênh bán một giá, vì giá trên app thường cao hơn giá tại quán.
+    // null = chưa set → rơi về giá tại quán, rồi về PosIngredient.addonPrice
+    // Cho phép 0 = tặng kèm miễn phí.
+    //
+    // Chỉ có ý nghĩa khi variant.isAddonGroup = true.
+
+    /** Giá bán TẠI QUÁN (TAKE_AWAY / DINE_IN). */
+    @Column(name = "addon_price_override", precision = 15, scale = 2)
+    private BigDecimal addonPriceOverride;
+
+    /** Giá bán trên ShopeeFood. */
+    @Column(name = "addon_price_shopee", precision = 15, scale = 2)
+    private BigDecimal addonPriceShopee;
+
+    /** Giá bán trên GrabFood. */
+    @Column(name = "addon_price_grab", precision = 15, scale = 2)
+    private BigDecimal addonPriceGrab;
+
+    /** Giá addon mặc định khai báo ở nguyên liệu. Không bao giờ trả null. */
+    public BigDecimal defaultAddonPrice() {
+        if (ingredient != null && ingredient.getAddonPrice() != null)
+            return ingredient.getAddonPrice();
+        return BigDecimal.ZERO;
+    }
+
+    /** Giá bán tại quán (đã fallback về giá mặc định của nguyên liệu). */
+    public BigDecimal resolveAddonPrice() {
+        return addonPriceOverride != null ? addonPriceOverride : defaultAddonPrice();
+    }
+
+    /**
+     * Giá addon theo KÊNH BÁN.
+     *
+     * @param platform null = bán tại quán; SHOPEE_FOOD / GRAB_FOOD = bán qua app.
+     *
+     * Fallback cho đơn app: giá app của kênh đó → giá tại quán → giá mặc định
+     * của nguyên liệu. Nhờ vậy addon cũ (chưa khai giá app) vẫn bán đúng thay
+     * vì trả về 0.
+     */
+    public BigDecimal resolveAddonPrice(AppPlatform platform) {
+        if (platform == AppPlatform.SHOPEE_FOOD && addonPriceShopee != null)
+            return addonPriceShopee;
+        if (platform == AppPlatform.GRAB_FOOD && addonPriceGrab != null)
+            return addonPriceGrab;
+        return resolveAddonPrice();
+    }
 }

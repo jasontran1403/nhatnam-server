@@ -12,8 +12,8 @@ spring:
 
   servlet:
     multipart:
-      max-file-size: 20MB
-      max-request-size: 25MB
+      max-file-size: 200MB
+      max-request-size: 210MB
 
 server:
   port: 9009
@@ -29,3 +29,91 @@ application:
       expiration: 604800000 # 7 day
       refresh-token:
         expiration: 604800000 # 7 days
+
+# ── Viettel EInvoice ─────────────────────────────────────────────
+viettel:
+  einvoice:
+    base-url: https://api-vinvoice.viettel.vn/services/einvoiceapplication/api
+    auth-url: https://api-vinvoice.viettel.vn/auth/login
+    invoice-type: "1"
+
+    # ── Chế độ ký ──────────────────────────────────────────────
+    # HSM = tài khoản test (ký server-side)
+    # USB_TOKEN = tài khoản thật (ký USB token PKCS#11)
+    sign-mode: USB_TOKEN
+
+    # ── Tài khoản thật 0318935975 ──────────────────────────────
+    username: "0318935975"
+    password: "OriginalTaste052026!@#"            # điền password tài khoản Viettel tại đây
+    supplier-tax-code: "0318935975"
+    template-code: "1/001"
+    invoice-series: "C26TOT"
+    default-tax-percent: 8
+
+    pos-template-code: "1/002"
+    pos-invoice-series: "C26MOT"
+    pos-invoice-type: "1"
+
+    # ── USB Token ──────────────────────────────────────────────
+    pkcs11-library-path: "C:/Windows/System32/winca_csp11_v1.dll"
+    pkcs11-slot-index: 0
+    pkcs11-pin: "12345678"
+    certificate-serial: "5401166dfdb3fe3015a1ba66ca20aa4f"
+
+app:
+  public-base-url: https://www.original-taste.vn
+
+  # Dịch vụ sinh ảnh QR (không cần thêm thư viện Java).
+  # Máy chủ phải ra được internet lúc render PDF hóa đơn.
+  qr-api-url: "https://api.qrserver.com/v1/create-qr-code/?size=300x300&margin=0&data="
+
+tools:
+  ffmpeg:
+    ffmpeg-path: "C:/ffmpeg/bin/ffmpeg.exe"
+    ffprobe-path: "C:/ffmpeg/bin/ffprobe.exe"
+
+  media:
+    # Thư mục lưu ảnh/video. Đường dẫn tương đối tính từ nơi chạy backend.
+    # Production nên đặt đường dẫn tuyệt đối ngoài thư mục build,
+    # nếu không deploy lại là mất hết file.
+    storage-dir: ./data/media
+
+  pkcs11:
+    # Cấu hình USB token RIÊNG cho tính năng ký số PDF (/api/tools/sign).
+    # Tách khỏi viettel.einvoice.pkcs11-* và dùng provider tên khác
+    # (SunPKCS11-ToolsToken) để hai luồng không tranh nhau slot.
+    # Có thể trỏ tới cùng một token vật lý.
+    library-path: "C:/Windows/System32/winca_csp11_v1.dll"
+    slot-index: 0
+
+    # Rỗng = lấy key entry đầu tiên tìm thấy trong token
+    key-alias: ""
+
+    sign-logo-path: ""        # "" = tự tìm ở classpath; "none" = tắt ảnh dấu
+    sign-logo-scale: 0.7          # tạo chỗ trống 30% chiều cao
+    sign-logo-offset-lines: 3     # dịch lên 3 dòng
+    sign-logo-opacity: 0.15
+
+    # Font có dấu tiếng Việt cho tên người ký.
+    # Server Linux PHẢI đổi đường dẫn, ví dụ:
+    #   /usr/share/fonts/truetype/dejavu/DejaVuSans.ttf
+    # Không đổi thì tên người ký trên PDF bị mất dấu.
+    font-regular-path: "C:/Windows/Fonts/arial.ttf"
+  security:
+    # TTL token khi user tick "Ghi nhớ đăng nhập", ms.
+    # Mặc định 7 ngày. Không tick → token 12 giờ (hardcode trong ToolsAuthController).
+    jwt-ttl-ms: 604800000
+
+    # Mật khẩu ban đầu của 2 tài khoản mặc định (chỉ dùng lần khởi động đầu
+    # KHI bảng tools_user còn trống). Sau đó không có tác dụng, đổi trong UI.
+    seed-admin-password: "1412"
+    seed-user-password:  "123"
+
+
+telegram:
+  enabled: true
+  bot:
+    token: "8967601237:AAE-8MPb_f1dT2KAXe28BNXlonF3harpcoo"
+    username: "Eoffice_OT_BOT"
+  polling: { enabled: true, interval-ms: 2000, timeout-sec: 25 }
+  link:    { ttl-minutes: 10 }

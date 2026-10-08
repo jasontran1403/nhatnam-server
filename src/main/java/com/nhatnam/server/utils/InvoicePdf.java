@@ -172,6 +172,38 @@ public class InvoicePdf {
         String qrUrl         = VIETQR_URL + "?amount=" + paymentAmount
                 + "&addInfo=" + addInfo + "&accountName=" + accountName;
 
+        // ── QR nhập thông tin xuất hóa đơn điện tử ────────────────────────
+        // Chỉ in khi có link; đơn cũ chưa có token thì khối này biến mất hẳn.
+        String einvoiceQrHtml = "";
+        String einvoiceQrUrl  = invoiceDTO.getInvoiceQrUrl();
+        String einvoiceLink   = invoiceDTO.getInvoicePublicUrl();
+        if (einvoiceQrUrl != null && !einvoiceQrUrl.isBlank()) {
+            einvoiceQrHtml =
+                    "<table style=\"width:100%; border-collapse:collapse; page-break-inside:avoid; margin-top:10px;\">" +
+                        "<tr><td style=\"border:none; padding:0;\">" +
+                            "<div class=\"payment-section\">" +
+                                "<div class=\"payment-label\">Quét mã để nhập thông tin xuất hóa đơn điện tử</div>" +
+                                "<table class=\"payment-table\">" +
+                                    "<tr>" +
+                                        "<td class=\"bank-cell\">" +
+                                            "<p><b>Xuất hóa đơn GTGT</b></p>" +
+                                            "<p style=\"font-size:10px;\">Quét mã QR bên cạnh để nhập mã số thuế," +
+                                            " tên công ty, địa chỉ và email nhận hóa đơn.</p>" +
+                                            (einvoiceLink != null
+                                                    ? "<p style=\"font-size:9px; word-break:break-all;\">"
+                                                        + escapeHtml(einvoiceLink) + "</p>"
+                                                    : "") +
+                                        "</td>" +
+                                        "<td class=\"qr-cell\">" +
+                                            "<img src=\"" + escapeHtml(einvoiceQrUrl) + "\" alt=\"QR xuat hoa don\">" +
+                                        "</td>" +
+                                    "</tr>" +
+                                "</table>" +
+                            "</div>" +
+                        "</td></tr>" +
+                    "</table>";
+        }
+
         // ── Thời gian ─────────────────────────────────────────────────────
         String printTime = LocalDateTime.now()
                 .format(DateTimeFormatter.ofPattern("HH:mm:ss dd/MM/yyyy"));
@@ -206,6 +238,7 @@ public class InvoicePdf {
         htmlContent = htmlContent.replace("{{order_vatPrice}}",      formatCurrency(vatAmount.doubleValue()));
         htmlContent = htmlContent.replace("{{order_totalAfterFee}}", formatCurrency(finalAmount.doubleValue()));
         htmlContent = htmlContent.replace("{{qr_url}}",              qrUrl);
+        htmlContent = htmlContent.replace("{{einvoice_qr_block}}",   einvoiceQrHtml);
 
         // Generate PDF
         try (ByteArrayOutputStream outputStream = new ByteArrayOutputStream()) {

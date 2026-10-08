@@ -31,6 +31,8 @@ import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.ZoneId;
 import java.util.*;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.locks.ReentrantLock;
@@ -46,7 +48,7 @@ public class SellerController {
     private final ProductService productService;
     private final OrderService orderService;
     private final IngredientService ingredientService;
-    private final FileStorageService fileStorageService;
+    private final POSFileStorageService fileStorageService;
     private final CategoryService categoryService;
     private final CustomerService customerService;
     private final InventoryLogRepository inventoryLogRepository;
@@ -55,6 +57,7 @@ public class SellerController {
     private final CustomerRepository customerRepository;
     private final InventoryBatchService inventoryBatchService;
     private final SupplierRepository supplierRepository;
+    private final com.nhatnam.server.einvoice.service.SaleInvoiceTokenService saleInvoiceTokenService;
 
     @GetMapping("/suppliers")
     public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getSuppliers() {
@@ -118,10 +121,12 @@ public class SellerController {
     public ResponseEntity<ApiResponse<Page<InventoryBatchSummaryResponse>>> listBatches(
             @RequestParam(required = false) String action,
             @RequestParam(defaultValue = "0")  int page,
-            @RequestParam(defaultValue = "20") int size) {
+            @RequestParam(defaultValue = "20") int size,
+            Authentication auth) {
 
         return ResponseEntity.ok(ApiResponse.success(
-                inventoryBatchService.listBatches(action, page, size), "OK"));
+                inventoryBatchService.listBatches(action, page, size,
+                        (com.nhatnam.server.entity.User) auth.getPrincipal()), "OK"));
     }
 
     /**
@@ -871,6 +876,18 @@ public class SellerController {
             }
             invoiceDTO.setVatBreakdown(vatBreakdown);
 
+            // ── QR nhập thông tin xuất hóa đơn ────────────────────────
+            // Sinh token lần đầu in hóa đơn; các lần sau tái sử dụng token cũ
+            // để QR đã in ra vẫn còn hiệu lực.
+            try {
+                String token = saleInvoiceTokenService.ensureToken(orderId);
+                invoiceDTO.setInvoicePublicUrl(saleInvoiceTokenService.buildPublicUrl(token));
+                invoiceDTO.setInvoiceQrUrl(saleInvoiceTokenService.buildQrImageUrl(token));
+            } catch (Exception ex) {
+                // Không chặn việc in hóa đơn chỉ vì thiếu QR
+                log.warn("Không tạo được QR xuất hóa đơn cho order {}: {}", orderId, ex.getMessage());
+            }
+
             // ← Đồng bộ, trả PDF trực tiếp
             byte[] pdfBytes = invoicePdf.GenerateInvoicePdf(invoiceDTO);
             String filename = "invoice_" + order.getOrderCode() + ".pdf";
@@ -1025,10 +1042,14 @@ public class SellerController {
     @GetMapping("/ingredients")
     public ResponseEntity<ApiResponse<List<IngredientResponse>>> getPaginationIngredients(
             @RequestParam(defaultValue = "0")  int page,
-            @RequestParam(defaultValue = "20") int size) {
+            @RequestParam(defaultValue = "20") int size,
+            Authentication auth) {
         try {
             List<IngredientResponse> ingredients =
-                    ingredientService.getPaginationIngredients(page, size);
+                    ((com.nhatnam.server.service.serviceimpl.IngredientServiceImpl) ingredientService)
+                            .getPaginationIngredientsForSeller(
+                                    ((com.nhatnam.server.entity.User) auth.getPrincipal()).getId(),
+                                    page, size);
             return ResponseEntity.ok(
                     ApiResponse.success(ingredients, "Ingredients retrieved successfully")
             );
@@ -1059,6 +1080,35 @@ public class SellerController {
             );
         } catch (Exception e) {
             log.error("❌ Failed to get ingredient ID: {}", id, e);
+            return ResponseEntity.ok(
+                    ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage())
+            );
+        }
+    }
+
+    /**
+     * Danh sách LÔ GIÁ VỐN của 1 nguyên liệu (theo kho của seller đang đăng nhập).
+     * Lô "OPENING" = tồn kho cũ backfill (giá vốn 0, HSD +1 năm).
+     * GET /api/seller/ingredients/{id}/cost-lots
+     */
+    @GetMapping("/ingredients/{id}/cost-lots")
+    public ResponseEntity<ApiResponse<List<InventoryCostLotResponse>>> getIngredientCostLots(
+            @PathVariable Long id,
+            Authentication auth) {
+        try {
+            List<InventoryCostLotResponse> lots = inventoryBatchService.listCostLots(
+                    id, (com.nhatnam.server.entity.User) auth.getPrincipal());
+
+            return ResponseEntity.ok(
+                    ApiResponse.success(lots, "Cost lots retrieved successfully")
+            );
+        } catch (RuntimeException e) {
+            log.error("❌ Ingredient not found ID: {}", id, e);
+            return ResponseEntity.ok(
+                    ApiResponse.error(StatusCode.NOT_FOUND, e.getMessage())
+            );
+        } catch (Exception e) {
+            log.error("❌ Failed to get cost lots for ingredient ID: {}", id, e);
             return ResponseEntity.ok(
                     ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage())
             );
@@ -1576,20 +1626,41 @@ public class SellerController {
      * GET /api/seller/orders/my-orders
      */
     @GetMapping("/orders")
-    public ResponseEntity<ApiResponse<List<OrderResponse>>> getMyOrders(
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getMyOrders(
+            @RequestParam(defaultValue = "")   String q,
+            @RequestParam(required = false)    Long   fromTs,
+            @RequestParam(required = false)    Long   toTs,
+            @RequestParam(defaultValue = "0")  int    page,
+            @RequestParam(defaultValue = "20") int    size,
             Authentication authentication) {
         try {
             User user = (User) authentication.getPrincipal();
-            List<OrderResponse> orders = orderService.getMyOrders(user.getId());
 
-            return ResponseEntity.ok(
-                    ApiResponse.success(orders, "Orders retrieved successfully")
-            );
+            // Mặc định hôm nay
+            LocalDate today    = LocalDate.now(ZoneId.of("Asia/Ho_Chi_Minh"));
+            long resolvedFrom  = fromTs != null ? fromTs :
+                    today.atStartOfDay(ZoneId.of("Asia/Ho_Chi_Minh"))
+                            .toInstant().toEpochMilli();
+            long resolvedTo    = toTs != null ? toTs :
+                    today.plusDays(1).atStartOfDay(ZoneId.of("Asia/Ho_Chi_Minh"))
+                            .toInstant().toEpochMilli() - 1;
+
+            Page<OrderResponse> pageResult = orderService.getSaleOrderHistory(
+                    user.getId(), resolvedFrom, resolvedTo, q, page, size);
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("content",     pageResult.getContent());
+            result.put("totalItems",  pageResult.getTotalElements());
+            result.put("totalPages",  pageResult.getTotalPages());
+            result.put("currentPage", page);
+            result.put("hasNext",     pageResult.hasNext());
+
+            return ResponseEntity.ok(ApiResponse.success(result,
+                    "Orders retrieved successfully"));
         } catch (Exception e) {
             log.error("[SELLER] Error getting orders", e);
-            return ResponseEntity.ok(
-                    ApiResponse.error(StatusCode.INTERNAL_SERVER_ERROR, e.getMessage())
-            );
+            return ResponseEntity.ok(ApiResponse.error(
+                    StatusCode.INTERNAL_SERVER_ERROR, e.getMessage()));
         }
     }
 

@@ -135,16 +135,21 @@ public class PosExcelReportService {
         List<PosShiftCloseInventory> closeInv = closeInvRepo.findByShift(shift);
         List<PosShiftStockImport> importInv = importRepo.findByShift(shift);
 
+        // ── Ý 1: config nguyên liệu (đọc hotSaleEnabled...) + gộp số phần bán nóng ──
+        Map<Long, PosIngredient> ingCfgMap = ingredientRepo.findByStoreId(storeId).stream()
+                .collect(Collectors.toMap(PosIngredient::getId, i -> i, (a, b) -> a));
+        Map<Long, Integer> hotPortionsMap = new HashMap<>();
+        // ── Ý 2: số lượng ĐÃ XÉ BÁN LẺ (theo đơn vị nhỏ nhất, vd "Miếng") ──
+        Map<Long, BigDecimal> loosePiecesMap = new HashMap<>();
+
         // ── Import map ───────────────────────────────────────────────
-        Map<Long, Integer> importMap = new HashMap<>();
-        Map<Long, Integer> uppMap = new HashMap<>();
+        Map<Long, BigDecimal> importMap = new HashMap<>();
         for (PosShiftStockImport imp : importInv) {
             if (imp.getIngredientId() == null) continue;
             Long ingId = imp.getIngredientId();
             int packQty = imp.getPackQty() != null ? imp.getPackQty() : 0;
-            int unitPerPack = imp.getUnitPerPack() != null ? imp.getUnitPerPack() : 1;
-            importMap.merge(ingId, packQty * unitPerPack, Integer::sum);
-            uppMap.putIfAbsent(ingId, unitPerPack);
+            BigDecimal unitPerPack = imp.getUnitPerPack() != null ? imp.getUnitPerPack() : BigDecimal.ONE;
+            importMap.merge(ingId, BigDecimal.valueOf(packQty).multiply(unitPerPack), BigDecimal::add);
         }
 
         // ── Sales map + ingNameMap (gộp 1 vòng lặp) ─────────────────
@@ -159,12 +164,55 @@ public class PosExcelReportService {
             for (PosOrderItem item : orderItemRepo.findByOrder(order)) {
                 boolean isApp = order.getOrderSource() == OrderSource.SHOPEE_FOOD ||
                         order.getOrderSource() == OrderSource.GRAB_FOOD;
-                boolean isLanh = !isApp && item.getDiscountPercent() == 0 &&
-                        isProductSinglePrice(item.getProductId());
+                // Định nghĩa "Lạnh" phải NHẤT QUÁN với Dashboard: dựa trên
+                // snapshot categoryName của order item ("Lạnh"), KHÔNG dựa vào
+                // cờ category.singlePrice hiện tại của product (cờ này có thể
+                // chưa được set true trong DB → khiến món lạnh rơi nhầm vào ô 0%).
+                boolean isLanh = !isApp
+                        && item.getCategoryName() != null
+                        && item.getCategoryName().trim().equalsIgnoreCase("Lạnh");
 
-                for (PosOrderItemIngredient si : orderItemIngredientRepo.findByOrderItem(item)) {
+                List<PosOrderItemIngredient> ingredients = orderItemIngredientRepo.findByOrderItem(item);
+
+                for (PosOrderItemIngredient si : ingredients) {
                     long ingId = si.getIngredientId();
                     ingNameMap.putIfAbsent(ingId, si.getIngredientName());
+
+                    // Ý 1: usage BÁN MÓN NÓNG = NL bật hotSale + định lượng trừ kho
+                    //   đúng bằng "định lượng mỗi phần" (hotQtyPerSale).
+                    //   → đếm số lần (selectedCount đã gồm × số lượng món),
+                    //     KHÔNG đưa vào dòng chính (Bán). Usage bán nguyên
+                    //     túi (định lượng khác) vẫn tính bình thường.
+                    PosIngredient hotCfg = ingCfgMap.get(ingId);
+                    BigDecimal ded = si.getDefaultDeductPerUnit();
+                    boolean isHotUsage = hotCfg != null
+                            && Boolean.TRUE.equals(hotCfg.getHotSaleEnabled())
+                            && hotCfg.getHotQtyPerSale() != null
+                            && ded != null
+                            && ded.compareTo(hotCfg.getHotQtyPerSale()) == 0;
+
+                    if (isHotUsage) {
+                        hotPortionsMap.merge(ingId,
+                                si.getSelectedCount() != null ? si.getSelectedCount() : 0,
+                                Integer::sum);
+                        continue; // không cộng vào salesMap (dòng chính)
+                    }
+
+                    // Ý 2: usage BÁN XÉ LẺ = order item có cờ looseSale + NL bật
+                    //   looseSaleEnabled. quantityUsed lúc này là SỐ MIẾNG (đơn vị
+                    //   nhỏ nhất), KHÔNG phải số túi → tách sang dòng phụ, dòng
+                    //   chính chỉ giữ phần bán nguyên túi.
+                    boolean isLooseUsage = hotCfg != null
+                            && Boolean.TRUE.equals(hotCfg.getLooseSaleEnabled())
+                            && Boolean.TRUE.equals(item.getLooseSale());
+
+                    if (isLooseUsage) {
+                        loosePiecesMap.merge(ingId,
+                                si.getQuantityUsed() != null ? si.getQuantityUsed() : BigDecimal.ZERO,
+                                BigDecimal::add);
+                        continue; // không cộng vào salesMap (dòng chính)
+                    }
+
                     salesMap.putIfAbsent(ingId, new BigDecimal[]{
                             BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
                             BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO});
@@ -246,25 +294,67 @@ public class PosExcelReportService {
             int closePack = ci != null ? nvlInt(ci.getPackQuantity()) : 0;
             BigDecimal closeUnit = ci != null ? nvlBD(ci.getUnitQuantity()) : BigDecimal.ZERO;
 
-            int upp = oi.getUnitPerPack() != null ? oi.getUnitPerPack() : 1;
-            int impUnits = importMap.getOrDefault(id, 0);
-
-            BigDecimal openingUnits = BigDecimal.valueOf((long) openPack * upp).add(openUnit);
-            BigDecimal totalOpeningUnits = openingUnits.add(BigDecimal.valueOf(impUnits));
-            BigDecimal closingUnits = BigDecimal.valueOf((long) closePack * upp).add(closeUnit);
+            BigDecimal upp = oi.getUnitPerPack() != null ? oi.getUnitPerPack() : BigDecimal.ONE;
+            BigDecimal impUnits = importMap.getOrDefault(id, BigDecimal.ZERO);
 
             BigDecimal totalSold = sales[0].add(sales[1]).add(sales[2]).add(sales[3])
                     .add(sales[4]).add(sales[5]).add(sales[6]);
 
-            BigDecimal expectedClosing = totalOpeningUnits.subtract(totalSold);
-            BigDecimal diffBD = closingUnits.subtract(expectedClosing)
+            // ── Cấu hình bán món nóng ───────────────────────────────
+            PosIngredient hotCfg = ingCfgMap.get(id);
+            boolean hotMode = hotCfg != null && Boolean.TRUE.equals(hotCfg.getHotSaleEnabled());
+            int hotPortions = hotMode ? hotPortionsMap.getOrDefault(id, 0) : 0;
+            int hotPerBag = (hotMode && hotCfg.getHotSalesPerBag() != null
+                    && hotCfg.getHotSalesPerBag() > 0) ? hotCfg.getHotSalesPerBag() : 1;
+            int hotBags = hotMode ? (hotPortions + hotPerBag - 1) / hotPerBag : 0; // ceil
+
+            // ── Ý 2: cấu hình bán xé lẻ ─────────────────────────────
+            boolean looseMode = hotCfg != null && Boolean.TRUE.equals(hotCfg.getLooseSaleEnabled());
+            BigDecimal loosePieces = looseMode
+                    ? loosePiecesMap.getOrDefault(id, BigDecimal.ZERO) : BigDecimal.ZERO;
+            // Tỷ lệ quy đổi 1 <đơn vị NL> = n <đơn vị xé lẻ>  → dùng unitPerPack
+            BigDecimal loosePerPack = (upp != null && upp.signum() > 0)
+                    ? upp
+                    : (hotCfg != null && hotCfg.getUnitPerPack() != null
+                    && hotCfg.getUnitPerPack().signum() > 0
+                    ? hotCfg.getUnitPerPack() : BigDecimal.ONE);
+            // Số túi đã xé = ceil(số miếng / tỷ lệ quy đổi)
+            int looseBags = loosePieces.signum() > 0
+                    ? loosePieces.divide(loosePerPack, 0, RoundingMode.CEILING).intValue() : 0;
+            // Số miếng còn dư trong (các) túi đã xé
+            BigDecimal looseLeftover = BigDecimal.valueOf(looseBags)
+                    .multiply(loosePerPack).subtract(loosePieces).max(BigDecimal.ZERO);
+
+            BigDecimal expectedClosing;
+            BigDecimal actualClosing;
+
+            if (hotMode || looseMode) {
+                // NL vừa bán nguyên túi vừa xé lẻ (món nóng / xé bán lẻ) → TÍNH THEO TÚI.
+                // salesMap ở đây là số TÚI nguyên đã bán (deduct = 1 túi/lần),
+                // nên KHÔNG được quy đầu ca/nhập/cuối ca ra đơn vị lẻ.
+                BigDecimal openingPacks = BigDecimal.valueOf(openPack).add(toPacks(openUnit, upp));
+                BigDecimal importPacks = toPacks(impUnits, upp);
+                actualClosing = BigDecimal.valueOf(closePack).add(toPacks(closeUnit, upp));
+                expectedClosing = openingPacks.add(importPacks)
+                        .subtract(totalSold)                        // bán nguyên túi
+                        .subtract(BigDecimal.valueOf(hotBags))      // túi đã xé cho món nóng
+                        .subtract(BigDecimal.valueOf(looseBags));   // túi đã xé để bán lẻ
+            } else {
+                // NL thường → tính theo đơn vị lẻ như cũ
+                BigDecimal openingUnits = BigDecimal.valueOf(openPack).multiply(upp).add(openUnit);
+                actualClosing = BigDecimal.valueOf(closePack).multiply(upp).add(closeUnit);
+                expectedClosing = openingUnits.add(impUnits).subtract(totalSold);
+            }
+
+            BigDecimal diffBD = actualClosing.subtract(expectedClosing)
                     .setScale(2, RoundingMode.HALF_UP);
 
             int diffSign = diffBD.compareTo(BigDecimal.ZERO);
             String status = (diffSign == 0) ? "Đủ hàng" : (diffSign > 0 ? "Dư" : "Thiếu");
             String slVal = (diffSign == 0) ? "-" : fmtDecimal(diffBD.abs());
 
-            int impPacks = (upp > 0 && impUnits > 0) ? impUnits / upp : 0;
+            int impPacks = (upp.signum() > 0 && impUnits.signum() > 0)
+                    ? impUnits.divide(upp, 0, RoundingMode.HALF_UP).intValue() : 0;
 
             Row row = ws.createRow(ROW++);
             row.setHeightInPoints(18);
@@ -276,6 +366,18 @@ public class PosExcelReportService {
                     status, slVal, diffSign);
             applyRowStyle(row, mainStyle, 16);
             stt++;
+
+            // ── Ý 1: dòng phụ "món nóng" NGAY DƯỚI nguyên liệu chính ──
+            if (hotMode && hotPortions > 0) {
+                ROW = writeHotSubRow(wb, ws, oi.getIngredientName(),
+                        hotPortions, hotBags, hotCfg, ROW);
+            }
+
+            // ── Ý 2: dòng phụ "xé bán lẻ" NGAY DƯỚI nguyên liệu chính ──
+            if (looseMode && loosePieces.signum() > 0) {
+                ROW = writeLooseSubRow(wb, ws, oi.getIngredientName(),
+                        loosePieces, looseBags, looseLeftover, hotCfg, ROW);
+            }
         }
 
         // ── SUB ingredients từ openInv (type = SUB) ──────────────────
@@ -383,7 +485,7 @@ public class PosExcelReportService {
     private int buildSheetDoanhThu(XSSFWorkbook wb, XSSFSheet ws, PosShift shift,
                                    int rowStart, String storeName, Long storeId) {
 
-        int[] widths = {4, 24, 8, 8, 8, 8, 10, 9, 14};
+        int[] widths = {4, 24, 8, 8, 8, 8, 10, 9, 8, 14};   // ← thêm cột Lạnh (idx 8)
         for (int i = 0; i < widths.length; i++)
             ws.setColumnWidth(i, widths[i] * 256);
 
@@ -392,6 +494,13 @@ public class PosExcelReportService {
                 .collect(Collectors.toList());
 
         Map<Long, Object[]> prodMap = new LinkedHashMap<>();
+        // Ý 2: doanh thu/số miếng bán xé lẻ, tách riêng theo product → [pieces, revenue]
+        Map<Long, BigDecimal[]> looseMap = new LinkedHashMap<>();
+        // ADDON: doanh thu addon tách riêng THEO TỪNG MÓN.
+        //   productId → (tên addon → [số lượng, doanh thu])
+        //   Addon cùng tên trong CÙNG một món mới gộp; "Trứng" của Hamburger và
+        //   "Trứng" của Lasagna là 2 dòng phụ độc lập.
+        Map<Long, Map<String, AddonAgg>> addonMap = new LinkedHashMap<>();
 
         // ============ FILTER PRODUCTS THEO STORE_ID ============
         for (PosProduct p : productRepo.findByStoreIdAndIsActiveTrueOrderByDisplayOrderAscNameAsc(storeId))
@@ -399,7 +508,8 @@ public class PosExcelReportService {
                     p.getName(), 0, 0, 0, 0, 0, 0,
                     p.getBasePrice(),
                     p.getVatPercent() != null ? p.getVatPercent() : 0,
-                    BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO
+                    BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+                    0   // [12] Lạnh (số phần)
             });
         // =======================================================
 
@@ -415,7 +525,7 @@ public class PosExcelReportService {
                 Object[] d = prodMap.computeIfAbsent(item.getProductId(),
                         id -> new Object[]{item.getProductName(), 0, 0, 0, 0, 0, 0,
                                 item.getBasePrice(), 0,
-                                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO});
+                                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, 0});
                 int qty = item.getQuantity();
                 BigDecimal subtotal = item.getSubtotal() != null ?
                         item.getSubtotal() : BigDecimal.ZERO;
@@ -428,22 +538,124 @@ public class PosExcelReportService {
                             .divide(orderSubTotal, 2, RoundingMode.HALF_UP);
                 }
 
-                if (order.getOrderSource() == OrderSource.SHOPEE_FOOD) {
-                    d[5] = (int) d[5] + qty;
-                    d[10] = ((BigDecimal) d[10]).add(allocatedRevenue);
-                } else if (order.getOrderSource() == OrderSource.GRAB_FOOD) {
-                    d[6] = (int) d[6] + qty;
-                    d[11] = ((BigDecimal) d[11]).add(allocatedRevenue);
-                } else {
-                    int disc = item.getDiscountPercent() != null ?
-                            item.getDiscountPercent() : 0;
-                    if (disc == 0) d[1] = (int) d[1] + qty;
-                    else if (disc == 10) d[2] = (int) d[2] + qty;
-                    else if (disc == 20) d[3] = (int) d[3] + qty;
-                    else if (disc == 100) d[4] = (int) d[4] + qty;
-                    else d[1] = (int) d[1] + qty;
-                    d[9] = ((BigDecimal) d[9]).add(allocatedRevenue);
+                // Ý 2: item bán xé lẻ → gộp vào looseMap (miếng + doanh thu),
+                // KHÔNG cộng vào số lượng khay của món chính.
+                if (Boolean.TRUE.equals(item.getLooseSale())) {
+                    // Số miếng = tổng lượng trừ kho của nguyên liệu (đã encode qua unitWeights)
+                    BigDecimal pieces = orderItemIngredientRepo.findByOrderItem(item).stream()
+                            .map(x -> x.getQuantityUsed() != null ? x.getQuantityUsed() : BigDecimal.ZERO)
+                            .reduce(BigDecimal.ZERO, BigDecimal::add);
+                    if (pieces.signum() == 0) pieces = BigDecimal.valueOf(qty); // fallback
+                    BigDecimal[] lm = looseMap.computeIfAbsent(item.getProductId(),
+                            k -> new BigDecimal[]{BigDecimal.ZERO, BigDecimal.ZERO});
+                    lm[0] = lm[0].add(pieces);                    // số miếng
+                    lm[1] = lm[1].add(allocatedRevenue);         // doanh thu xé lẻ
+                    continue;
                 }
+
+                // ── Xác định CỘT BÁN của item (dùng chung cho món và addon) ──
+                // 0=0%, 1=10%, 2=20%, 3=100%, 4=ShopeeFood, 5=GrabFood, 6=Lạnh
+                // Addon phải rơi vào ĐÚNG cột của món đã bán: món bán Shopee thì
+                // số lượng addon cũng nằm ở cột ShopeeFood.
+                final int colIdx;
+                if (order.getOrderSource() == OrderSource.SHOPEE_FOOD) {
+                    colIdx = 4;
+                } else if (order.getOrderSource() == OrderSource.GRAB_FOOD) {
+                    colIdx = 5;
+                } else {
+                    // Món "Lạnh" (single-price) → cột Lạnh riêng, KHÔNG dồn vào 0%.
+                    // Phân loại theo snapshot categoryName — nhất quán với sheet
+                    // Nguyên Liệu & Dashboard.
+                    boolean isLanh = item.getCategoryName() != null
+                            && item.getCategoryName().trim().equalsIgnoreCase("Lạnh");
+                    if (isLanh) {
+                        colIdx = 6;
+                    } else {
+                        int disc = item.getDiscountPercent() != null ?
+                                item.getDiscountPercent() : 0;
+                        if (disc == 10) colIdx = 1;
+                        else if (disc == 20) colIdx = 2;
+                        else if (disc == 100) colIdx = 3;
+                        else colIdx = 0;
+                    }
+                }
+
+                // ── ADDON: tách doanh thu addon ra khỏi doanh thu MÓN ──────
+                // Doanh thu dòng món phải là doanh thu món CHƯA gồm addon, để
+                // các dòng phụ addon bên dưới cộng lại mới ra tổng của item.
+                BigDecimal baseRevenue = allocatedRevenue;
+                BigDecimal itemAddonAmt = item.getAddonAmount() != null
+                        ? item.getAddonAmount() : BigDecimal.ZERO;
+
+                if (itemAddonAmt.signum() > 0 && subtotal.signum() > 0) {
+                    List<PosOrderItemIngredient> sels =
+                            orderItemIngredientRepo.findByOrderItem(item);
+
+                    // Chỉ nguyên liệu thuộc nhóm addon mới có addonPriceSnapshot.
+                    List<PosOrderItemIngredient> addonSels = sels.stream()
+                            .filter(x -> x.getAddonPriceSnapshot() != null)
+                            .collect(Collectors.toList());
+
+                    // Trọng số phân bổ = giá net × số lượng
+                    BigDecimal totalWeight = BigDecimal.ZERO;
+                    for (PosOrderItemIngredient x : addonSels) {
+                        totalWeight = totalWeight.add(addonLineWeight(x));
+                    }
+
+                    if (totalWeight.signum() > 0) {
+                        BigDecimal allocatedAddon = allocatedRevenue
+                                .multiply(itemAddonAmt)
+                                .divide(subtotal, 2, RoundingMode.HALF_UP);
+                        baseRevenue = allocatedRevenue.subtract(allocatedAddon);
+
+                        Map<String, AddonAgg> perProduct = addonMap
+                                .computeIfAbsent(item.getProductId(),
+                                        k -> new LinkedHashMap<>());
+
+                        BigDecimal distributed = BigDecimal.ZERO;
+                        for (int idx = 0; idx < addonSels.size(); idx++) {
+                            PosOrderItemIngredient x = addonSels.get(idx);
+                            BigDecimal rev;
+                            if (idx == addonSels.size() - 1) {
+                                // dòng cuối lấy phần dư → tránh lệch do làm tròn
+                                rev = allocatedAddon.subtract(distributed);
+                            } else {
+                                rev = allocatedAddon
+                                        .multiply(addonLineWeight(x))
+                                        .divide(totalWeight, 2, RoundingMode.HALF_UP);
+                                distributed = distributed.add(rev);
+                            }
+
+                            String name = x.getIngredientName() != null
+                                    ? x.getIngredientName().trim() : "Addon";
+                            BigDecimal count = BigDecimal.valueOf(
+                                    x.getSelectedCount() != null ? x.getSelectedCount() : 0);
+
+                            // Gộp theo TÊN trong phạm vi 1 món, số lượng cộng vào
+                            // ĐÚNG cột bán của món (0%/10%/.../Shopee/Grab/Lạnh)
+                            AddonAgg agg = perProduct.computeIfAbsent(name,
+                                    k -> new AddonAgg());
+                            agg.counts[colIdx] = agg.counts[colIdx].add(count);
+                            agg.revenue = agg.revenue.add(rev);
+                        }
+                    }
+                }
+
+                // Số lượng món vào đúng cột đã xác định ở trên
+                switch (colIdx) {
+                    case 4 -> d[5]  = (int) d[5] + qty;    // ShopeeFood
+                    case 5 -> d[6]  = (int) d[6] + qty;    // GrabFood
+                    case 6 -> d[12] = (int) d[12] + qty;   // Lạnh
+                    case 1 -> d[2]  = (int) d[2] + qty;    // 10%
+                    case 2 -> d[3]  = (int) d[3] + qty;    // 20%
+                    case 3 -> d[4]  = (int) d[4] + qty;    // 100%
+                    default -> d[1] = (int) d[1] + qty;    // 0%
+                }
+
+                // Doanh thu vào đúng nhóm nguồn
+                if (colIdx == 4)      d[10] = ((BigDecimal) d[10]).add(baseRevenue);
+                else if (colIdx == 5) d[11] = ((BigDecimal) d[11]).add(baseRevenue);
+                else                  d[9]  = ((BigDecimal) d[9]).add(baseRevenue);
             }
         }
 
@@ -460,13 +672,25 @@ public class PosExcelReportService {
             Object[] d = e.getValue();
             int s0 = (int) d[1], s10 = (int) d[2], s20 = (int) d[3], s100 = (int) d[4];
             int shopee = (int) d[5], grab = (int) d[6];
+            int lanh = (int) d[12];
             int vatPct = (int) d[8];
             BigDecimal offlineRev = (BigDecimal) d[9];
             BigDecimal shopeeRev = (BigDecimal) d[10];
             BigDecimal grabRev = (BigDecimal) d[11];
             BigDecimal rev = offlineRev.add(shopeeRev).add(grabRev);
-            boolean hasSales = (s0 + s10 + s20 + s100 + shopee + grab) > 0;
-            BigDecimal vatAmt = rev.multiply(BigDecimal.valueOf(vatPct))
+            boolean hasSales = (s0 + s10 + s20 + s100 + shopee + grab + lanh) > 0;
+
+            // ADDON: tổng doanh thu addon của món (để tính VAT & tổng cuối).
+            // Dòng món hiển thị doanh thu CHƯA gồm addon, nhưng VAT vẫn tính
+            // trên cả addon vì addon cùng thuế suất với món.
+            Map<String, AddonAgg> addonRows = addonMap.get(e.getKey());
+            BigDecimal addonRevTotal = BigDecimal.ZERO;
+            if (addonRows != null) {
+                for (AddonAgg a : addonRows.values()) addonRevTotal = addonRevTotal.add(a.revenue);
+            }
+
+            BigDecimal vatAmt = rev.add(addonRevTotal)
+                    .multiply(BigDecimal.valueOf(vatPct))
                     .divide(BigDecimal.valueOf(100), 2, RoundingMode.HALF_UP);
 
             grandRevenue = grandRevenue.add(rev);
@@ -475,7 +699,44 @@ public class PosExcelReportService {
             Row row = ws.createRow(ROW++);
             row.setHeightInPoints(18);
             writeProdCells(wb, row, stt++, (String) d[0],
-                    s0, s10, s20, s100, shopee, grab, vatPct, rev, hasSales, stt % 2 == 0);
+                    s0, s10, s20, s100, shopee, grab, lanh, vatPct, rev, hasSales, stt % 2 == 0);
+
+            // Ý 2: dòng phụ "xé lẻ" ngay dưới món chính (tính theo miếng, doanh thu riêng)
+            BigDecimal[] lm = looseMap.get(e.getKey());
+            if (lm != null && (lm[0].signum() > 0 || lm[1].signum() > 0)) {
+                Row lrow = ws.createRow(ROW++);
+                lrow.setHeightInPoints(16);
+                XSSFCellStyle lcs = createCellStyle(wb, "FFF3E0", false, 9, "5D4037", "center");
+                XSSFCellStyle lname = createCellStyle(wb, "FFF3E0", false, 9, "5D4037", "left");
+                XSSFCellStyle lrev = createCellStyle(wb, "FFF3E0", true, 9, "BF360C", "right");
+                DataFormat df2 = wb.createDataFormat();
+                lrev.setDataFormat(df2.getFormat("#,##0"));
+
+                lrow.createCell(0).setCellStyle(lcs);
+                Cell lnc = lrow.createCell(1);
+                lnc.setCellValue("   \u21b3 X\u00e9 l\u1ebb");
+                lnc.setCellStyle(lname);
+                Cell lpc = lrow.createCell(2);
+                lpc.setCellValue(lm[0].doubleValue());   // số miếng
+                lpc.setCellStyle(lcs);
+                for (int c = 3; c <= 8; c++) { Cell cc = lrow.createCell(c); cc.setCellStyle(lcs); }
+                Cell lrc = lrow.createCell(9);
+                lrc.setCellValue(lm[1].doubleValue());
+                lrc.setCellStyle(lrev);
+
+                grandRevenue = grandRevenue.add(lm[1]);
+            }
+
+            // ADDON: dòng phụ addon — LUÔN nằm SAU dòng phụ xé lẻ (nếu có).
+            // Mỗi tên addon 1 dòng, đã gộp số lượng + doanh thu trong phạm vi món.
+            if (addonRows != null && !addonRows.isEmpty()) {
+                for (Map.Entry<String, AddonAgg> ae : addonRows.entrySet()) {
+                    AddonAgg a = ae.getValue();
+                    if (a.isEmpty()) continue;
+                    ROW = writeAddonSubRow(wb, ws, ae.getKey(), a.counts, a.revenue, ROW);
+                    grandRevenue = grandRevenue.add(a.revenue);
+                }
+            }
         }
 
         Row foot = ws.createRow(ROW);
@@ -487,12 +748,12 @@ public class PosExcelReportService {
         vatFoot.setDataFormat(df.getFormat("#,##0"));
         revFoot.setDataFormat(df.getFormat("#,##0"));
 
-        mergeCells(ws, ROW, 0, ROW, 7, "Tổng doanh thu dự kiến", labelStyle);
-        Cell cVat = foot.createCell(7);
+        mergeCells(ws, ROW, 0, ROW, 8, "Tổng doanh thu dự kiến", labelStyle);
+        Cell cVat = foot.createCell(8);
         cVat.setCellValue(grandVat.doubleValue());
         cVat.setCellStyle(vatFoot);
 
-        Cell cRev = foot.createCell(8);
+        Cell cRev = foot.createCell(9);
         cRev.setCellValue(grandRevenue.doubleValue());
         cRev.setCellStyle(revFoot);
 
@@ -500,7 +761,7 @@ public class PosExcelReportService {
     }
 
     // ════════════════════════════════════════
-    // HEADER BLOCK — ĐÃ CẬP NHẬT
+    // HEADER BLOCK
     // ════════════════════════════════════════
 
     private void writeHeaderBlock(XSSFWorkbook wb, XSSFSheet ws,
@@ -596,13 +857,7 @@ public class PosExcelReportService {
         mergeCellsNum(ws, r4, DC + 1, r4, DC + 2, money.totalVat().doubleValue(), vatStyle, wb);
     }
 
-    // Các method còn lại (writeSheet1Headers, writeSheet2Headers, writeProdCells,
-    // createCellStyle, createMoneyStyle, mergeCells, setNumCellStyle, mergeCellsNum,
-    // hexToBytes, formatEpoch, isProductSinglePrice, calcMoney, nvlBD, nvlInt, fmtDecimal...)
-    // giữ nguyên hoàn toàn như code bạn cung cấp.
-
     private void writeSheet1Headers(XSSFWorkbook wb, XSSFSheet ws, int headerRow) {
-        // giữ nguyên như cũ
         Row r6 = ws.getRow(headerRow); if (r6 == null) r6 = ws.createRow(headerRow);
         Row r7 = ws.getRow(headerRow + 1); if (r7 == null) r7 = ws.createRow(headerRow + 1);
         r6.setHeightInPoints(22);
@@ -632,7 +887,6 @@ public class PosExcelReportService {
     }
 
     private void writeSheet2Headers(XSSFWorkbook wb, XSSFSheet ws, int headerRow) {
-        // giữ nguyên như cũ
         Row r6 = ws.getRow(headerRow); if (r6 == null) r6 = ws.createRow(headerRow);
         Row r7 = ws.getRow(headerRow + 1); if (r7 == null) r7 = ws.createRow(headerRow + 1);
         r6.setHeightInPoints(22);
@@ -643,10 +897,10 @@ public class PosExcelReportService {
 
         mergeCells(ws, headerRow, 0, headerRow + 1, 0, "STT", hTeal);
         mergeCells(ws, headerRow, 1, headerRow + 1, 1, "Tên sản phẩm", hTeal);
-        mergeCells(ws, headerRow, 2, headerRow, 7, "Bán", hOrange);
-        mergeCells(ws, headerRow, 8, headerRow + 1, 8, "Doanh thu dự kiến", hTeal);
+        mergeCells(ws, headerRow, 2, headerRow, 8, "Bán", hOrange);
+        mergeCells(ws, headerRow, 9, headerRow + 1, 9, "Doanh thu dự kiến", hTeal);
 
-        String[] bans = {"0%", "10%", "20%", "100%", "ShopeeFood", "GrabFood"};
+        String[] bans = {"0%", "10%", "20%", "100%", "ShopeeFood", "GrabFood", "Lạnh"};
         for (int i = 0; i < bans.length; i++) {
             Cell c = r7.createCell(i + 2);
             c.setCellValue(bans[i]);
@@ -654,7 +908,15 @@ public class PosExcelReportService {
         }
     }
 
-    // ==================== HELPERS (giữ nguyên) ====================
+    // ==================== HELPERS ====================
+
+    /** Quy đổi số lượng lẻ → số túi. upp <= 0 thì giữ nguyên. */
+    private BigDecimal toPacks(BigDecimal units, BigDecimal upp) {
+        if (units == null || units.signum() == 0) return BigDecimal.ZERO;
+        if (upp == null || upp.signum() <= 0) return units;
+        return units.divide(upp, 4, RoundingMode.HALF_UP);
+    }
+
     private void applyRowStyle(Row row, XSSFCellStyle style, int colCount) {
         for (int col = 0; col < colCount; col++) {
             Cell cell = row.getCell(col);
@@ -675,7 +937,7 @@ public class PosExcelReportService {
     }
 
     private void writeProdCells(XSSFWorkbook wb, Row row, int stt, String name,
-                                int s0, int s10, int s20, int s100, int shopee, int grab,
+                                int s0, int s10, int s20, int s100, int shopee, int grab, int lanh,
                                 int vatPct, BigDecimal rev, boolean hasSales, boolean even) {
         String rowBg = even ? "F5F5F5" : "FFFFFF";
         String revBg = hasSales ? "FBE9E7" : rowBg;
@@ -689,11 +951,110 @@ public class PosExcelReportService {
 
         row.createCell(0).setCellValue(stt); row.getCell(0).setCellStyle(cs);
         Cell nc = row.createCell(1); nc.setCellValue(name); nc.setCellStyle(csName);
-        int[] vals = {s0, s10, s20, s100, shopee, grab};
+        int[] vals = {s0, s10, s20, s100, shopee, grab, lanh};
         for (int i = 0; i < vals.length; i++) {
             Cell c = row.createCell(i + 2); c.setCellValue(vals[i]); c.setCellStyle(cs);
         }
-        Cell rc = row.createCell(8); rc.setCellValue(rev.doubleValue()); rc.setCellStyle(csRev);
+        Cell rc = row.createCell(9); rc.setCellValue(rev.doubleValue()); rc.setCellStyle(csRev);
+    }
+
+    /**
+     * Ý 1 — dòng phụ "món nóng" ngay dưới nguyên liệu chính.
+     * Cột 1: "{tên} (món nóng)". Merge cột 2 (Bịch đầu ca) → 15 (SL): số lần bán,
+     * canh trái, in đậm nghiêng. KHÔNG ghi nhận cuối ca / nhập (chỉ thông tin).
+     */
+    private int writeHotSubRow(XSSFWorkbook wb, XSSFSheet ws, String name,
+                               int portions, int bags, PosIngredient cfg, int rowIdx) {
+        XSSFCellStyle nameStyle = createCellStyle(wb, "FFF3E0", false, 10, "5D4037", "left");
+
+        XSSFCellStyle infoStyle = createCellStyle(wb, "FFF3E0", true, 10, "5D4037", "left");
+        XSSFFont f = wb.createFont();
+        f.setFontName("Arial");
+        f.setBold(true);
+        f.setItalic(true);
+        f.setFontHeightInPoints((short) 10);
+        f.setColor(new XSSFColor(hexToBytes("5D4037"), null));
+        infoStyle.setFont(f);
+        infoStyle.setIndention((short) 3); // cách mép trái ô
+
+        Row row = ws.createRow(rowIdx);
+        row.setHeightInPoints(20);
+
+        row.createCell(0).setCellStyle(infoStyle);      // STT trống
+        Cell nameC = row.createCell(1);
+        nameC.setCellValue(name + " (món nóng)");
+        nameC.setCellStyle(nameStyle);
+
+        StringBuilder txt = new StringBuilder("Bán món nóng: ")
+                .append(portions).append(" lần");
+        if (cfg.getHotSalesPerBag() != null && cfg.getHotSalesPerBag() > 0) {
+            txt.append("  →  ").append(bags).append(" bịch");
+        }
+        // kg + số lần còn dư trong (các) bịch đã mở
+        String extra = "";
+        if (cfg.getHotQtyPerSale() != null && cfg.getHotQtyPerSale().signum() > 0) {
+            BigDecimal totalQty = cfg.getHotQtyPerSale().multiply(BigDecimal.valueOf(portions));
+            String u = cfg.getHotSaleUnit() != null ? cfg.getHotSaleUnit() : "";
+            extra = totalQty.stripTrailingZeros().toPlainString() + " " + u;
+        }
+        if (cfg.getHotSalesPerBag() != null && cfg.getHotSalesPerBag() > 0) {
+            int leftover = bags * cfg.getHotSalesPerBag() - portions; // số lần còn dư
+            extra = (extra.isEmpty() ? "" : extra + ", ") + "còn dư " + leftover + " lần";
+        }
+        if (!extra.isEmpty()) txt.append("  (").append(extra).append(")");
+        // Merge cột 2 → 15, hiển thị số lần bán
+        mergeCells(ws, rowIdx, 2, rowIdx, 15, txt.toString(), infoStyle);
+        return rowIdx + 1;
+    }
+
+    /**
+     * Ý 2 — Dòng phụ "XÉ BÁN LẺ" ngay dưới dòng nguyên liệu chính.
+     *
+     * Hiển thị: Xé bán lẻ: {n} {looseUnit}  →  đã xé {bags} {unit}
+     *           ({unit} còn dư {leftover} {looseUnit})
+     *
+     * Đơn vị lấy từ cấu hình nguyên liệu (unit / looseUnit), KHÔNG hardcode.
+     */
+    private int writeLooseSubRow(XSSFWorkbook wb, XSSFSheet ws, String name,
+                                 BigDecimal pieces, int bags, BigDecimal leftover,
+                                 PosIngredient cfg, int rowIdx) {
+        XSSFCellStyle nameStyle = createCellStyle(wb, "E8F5E9", false, 10, "1B5E20", "left");
+
+        XSSFCellStyle infoStyle = createCellStyle(wb, "E8F5E9", true, 10, "1B5E20", "left");
+        XSSFFont f = wb.createFont();
+        f.setFontName("Arial");
+        f.setBold(true);
+        f.setItalic(true);
+        f.setFontHeightInPoints((short) 10);
+        f.setColor(new XSSFColor(hexToBytes("1B5E20"), null));
+        infoStyle.setFont(f);
+        infoStyle.setIndention((short) 3);
+
+        Row row = ws.createRow(rowIdx);
+        row.setHeightInPoints(20);
+
+        row.createCell(0).setCellStyle(infoStyle);      // STT trống
+        Cell nameC = row.createCell(1);
+        nameC.setCellValue(name + " (xé bán lẻ)");
+        nameC.setCellStyle(nameStyle);
+
+        String looseUnit = (cfg != null && cfg.getLooseUnit() != null
+                && !cfg.getLooseUnit().isBlank()) ? cfg.getLooseUnit() : "lẻ";
+        String packUnit = (cfg != null && cfg.getUnit() != null
+                && !cfg.getUnit().isBlank()) ? cfg.getUnit() : "Túi";
+
+        StringBuilder txt = new StringBuilder("Xé bán lẻ: ")
+                .append(fmtDecimal(pieces)).append(" ").append(looseUnit);
+        if (bags > 0) {
+            txt.append("  →  đã xé ").append(bags).append(" ").append(packUnit);
+        }
+        if (leftover != null && leftover.signum() > 0) {
+            txt.append("  (").append(packUnit).append(" còn dư ")
+                    .append(fmtDecimal(leftover)).append(" ").append(looseUnit).append(")");
+        }
+
+        mergeCells(ws, rowIdx, 2, rowIdx, 15, txt.toString(), infoStyle);
+        return rowIdx + 1;
     }
 
     private XSSFCellStyle createCellStyle(XSSFWorkbook wb, String bgHex, boolean bold,
@@ -726,6 +1087,73 @@ public class PosExcelReportService {
         DataFormat df = wb.createDataFormat();
         cs.setDataFormat(df.getFormat("#,##0"));
         return cs;
+    }
+
+    /**
+     * ADDON — số liệu gộp của 1 tên addon trong phạm vi 1 món.
+     * {@code counts} có 7 phần tử, khớp thứ tự cột "Bán" của sheet Doanh Thu:
+     * 0% / 10% / 20% / 100% / ShopeeFood / GrabFood / Lạnh.
+     */
+    private static class AddonAgg {
+        final BigDecimal[] counts = {
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO,
+                BigDecimal.ZERO, BigDecimal.ZERO, BigDecimal.ZERO
+        };
+        BigDecimal revenue = BigDecimal.ZERO;
+
+        boolean isEmpty() {
+            if (revenue.signum() != 0) return false;
+            for (BigDecimal c : counts) if (c.signum() != 0) return false;
+            return true;
+        }
+    }
+
+    /**
+     * ADDON — dòng phụ ngay dưới món (sau dòng phụ "xé lẻ" nếu có).
+     * Cột 1: "   ↳ Addon: {tên}". Số lượng nằm ở cột "Bán" tương ứng với món
+     * (0% / 10% / 20% / 100% / ShopeeFood / GrabFood / Lạnh). Cột 9: doanh thu.
+     * Doanh thu này KHÔNG nằm trong doanh thu dòng món phía trên.
+     */
+    private int writeAddonSubRow(XSSFWorkbook wb, XSSFSheet ws, String name,
+                                 BigDecimal[] counts, BigDecimal revenue, int rowIdx) {
+        Row row = ws.createRow(rowIdx);
+        row.setHeightInPoints(16);
+
+        XSSFCellStyle cs = createCellStyle(wb, "EDE7F6", false, 9, "4527A0", "center");
+        XSSFCellStyle csName = createCellStyle(wb, "EDE7F6", false, 9, "4527A0", "left");
+        XSSFCellStyle csRev = createCellStyle(wb, "EDE7F6", true, 9, "311B92", "right");
+        DataFormat df = wb.createDataFormat();
+        csRev.setDataFormat(df.getFormat("#,##0"));
+
+        row.createCell(0).setCellStyle(cs);
+
+        Cell nc = row.createCell(1);
+        nc.setCellValue("   \u21b3 Addon: " + name);
+        nc.setCellStyle(csName);
+
+        // Số lượng addon nằm ĐÚNG cột bán của món:
+        // cột 2..8 = 0% / 10% / 20% / 100% / ShopeeFood / GrabFood / Lạnh
+        for (int k = 0; k < 7; k++) {
+            Cell cc = row.createCell(k + 2);
+            if (counts[k].signum() != 0) cc.setCellValue(counts[k].doubleValue());
+            cc.setCellStyle(cs);
+        }
+
+        Cell rc = row.createCell(9);
+        rc.setCellValue(revenue.doubleValue());
+        rc.setCellStyle(csRev);
+
+        return rowIdx + 1;
+    }
+
+    /** Trọng số phân bổ doanh thu cho 1 dòng addon = giá net × số lượng. */
+    private BigDecimal addonLineWeight(PosOrderItemIngredient x) {
+        BigDecimal price = x.getAddonPriceNet() != null
+                ? x.getAddonPriceNet()
+                : (x.getAddonPriceSnapshot() != null
+                ? x.getAddonPriceSnapshot() : BigDecimal.ZERO);
+        int count = x.getSelectedCount() != null ? x.getSelectedCount() : 0;
+        return price.multiply(BigDecimal.valueOf(count));
     }
 
     private void mergeCells(XSSFSheet ws, int r1, int c1, int r2, int c2,

@@ -8,6 +8,7 @@ import com.nhatnam.server.entity.pos.PosShiftImage;
 import com.nhatnam.server.repository.pos.PosIngredientRepository;
 import com.nhatnam.server.repository.pos.PosShiftImageRepository;
 import com.nhatnam.server.repository.pos.PosShiftRepository;
+import com.nhatnam.server.service.POSFileStorageService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.log4j.Log4j2;
 import org.springframework.stereotype.Service;
@@ -25,7 +26,7 @@ public class ShiftImageService {
     private final PosShiftImageRepository shiftImageRepository;
     private final PosShiftRepository      shiftRepository;
     private final PythonOcrService        pythonOcrService;
-    private final FileStorageService      storageService;
+    private final POSFileStorageService      storageService;
 
     // ── Entry point: nhiều ảnh ────────────────────────────────────────────────
 

@@ -47,10 +47,11 @@ public class SellerOrderExportService {
     // 14 Tên sản phẩm
     // 15 Đơn vị
     // 16 Số lượng
-    // 17 Giá gốc
-    // 18 Giá bán
-    // 19 VAT %
-    private static final int LAST_COL = 19;
+    // 17 Giá vốn        ← MỚI (giá vốn NL / 1 đơn vị sản phẩm)
+    // 18 Giá gốc
+    // 19 Giá bán
+    // 20 VAT %
+    private static final int LAST_COL = 20;
 
     // ── DTOs ─────────────────────────────────────────────────────
 
@@ -80,6 +81,7 @@ public class SellerOrderExportService {
             String     productName,
             String     unit,
             BigDecimal quantity,
+            BigDecimal costPerUnit,   // ← MỚI: giá vốn NL / 1 đơn vị sản phẩm
             BigDecimal basePrice,
             BigDecimal unitPrice,
             BigDecimal vatRate
@@ -123,7 +125,7 @@ public class SellerOrderExportService {
                 .getResultList();
 
         List<Object[]> itemRows = em.createQuery(
-                        "SELECT oi.order.id, oi.productName, oi.unit, " +
+                        "SELECT oi.id, oi.order.id, oi.productName, oi.unit, " +
                                 "       oi.quantity, oi.basePrice, oi.unitPrice, oi.vatRate " +
                                 "FROM OrderItem oi " +
                                 "WHERE oi.order.type = :type " +
@@ -136,12 +138,44 @@ public class SellerOrderExportService {
                 .setParameter("to", toMs)
                 .getResultList();
 
+        // ── Giá vốn: ưu tiên SNAPSHOT lúc bán (oii.costAmount / oii.costPrice);
+        //    đơn cũ chưa có snapshot → fallback giá vốn hiện tại của NL (ing.costPrice) ──
+        List<Object[]> cogsRows = em.createQuery(
+                        "SELECT oii.orderItem.id, " +
+                                "       SUM(COALESCE(oii.costAmount, " +
+                                "           oii.quantityUsed * COALESCE(oii.costPrice, ing.costPrice, 0))) " +
+                                "FROM OrderItemIngredient oii, Ingredient ing " +
+                                "WHERE ing.id = oii.ingredientId " +
+                                "  AND oii.orderItem.order.type = :type " +
+                                "  AND (:from IS NULL OR oii.orderItem.order.createdAt >= :from) " +
+                                "  AND (:to   IS NULL OR oii.orderItem.order.createdAt <= :to) " +
+                                "  AND oii.orderItem.order.status = 'COMPLETED' " +
+                                "GROUP BY oii.orderItem.id", Object[].class)
+                .setParameter("type", orderType)
+                .setParameter("from", fromMs)
+                .setParameter("to", toMs)
+                .getResultList();
+
+        Map<Long, BigDecimal> cogsByItemId = new HashMap<>();
+        for (Object[] r : cogsRows) {
+            cogsByItemId.put((Long) r[0], toBD(r[1]));
+        }
+
         Map<Long, List<ItemRow>> itemMap = new LinkedHashMap<>();
         for (Object[] r : itemRows) {
-            Long oid = (Long) r[0];
+            Long       itemId   = (Long) r[0];
+            Long       oid      = (Long) r[1];
+            BigDecimal quantity = toBD(r[4]);
+
+            // Giá vốn / 1 đơn vị sản phẩm = tổng giá vốn NL của dòng ÷ số lượng bán
+            BigDecimal totalCogs   = cogsByItemId.getOrDefault(itemId, BigDecimal.ZERO);
+            BigDecimal costPerUnit = quantity.signum() > 0
+                    ? totalCogs.divide(quantity, 0, java.math.RoundingMode.HALF_UP)
+                    : BigDecimal.ZERO;
+
             itemMap.computeIfAbsent(oid, k -> new ArrayList<>())
-                    .add(new ItemRow(oid, nvl(r[1]), nvl(r[2]),
-                            toBD(r[3]), toBD(r[4]), toBD(r[5]), toBD(r[6])));
+                    .add(new ItemRow(oid, nvl(r[2]), nvl(r[3]),
+                            quantity, costPerUnit, toBD(r[5]), toBD(r[6]), toBD(r[7])));
         }
 
         List<OrderRow> orders = orderRows.stream().map(r -> new OrderRow(
@@ -200,7 +234,7 @@ public class SellerOrderExportService {
                     "Thời gian tạo", "Thanh toán",
                     "Tên công ty", "Mã số thuế", "Địa chỉ công ty",
                     "Tên sản phẩm", "Đơn vị", "Số lượng",
-                    "Giá gốc", "Giá bán", "VAT %"
+                    "Giá vốn", "Giá gốc", "Giá bán", "VAT %"
             };
             for (int i = 0; i < headers.length; i++) {
                 Cell c = hRow.createCell(i);
@@ -260,11 +294,12 @@ public class SellerOrderExportService {
                         setL(row, 14, nvl(item.productName()),    dataStyle);
                         setL(row, 15, nvl(item.unit()),           dataStyle);
                         setN(row, 16, item.quantity(),            numStyle);
-                        setN(row, 17, item.basePrice(),           numStyle);
-                        setN(row, 18, item.unitPrice(),           numStyle);
-                        setL(row, 19, fmtVatRate(item.vatRate()), dataStyle);
+                        setN(row, 17, item.costPerUnit(),         numStyle);
+                        setN(row, 18, item.basePrice(),           numStyle);
+                        setN(row, 19, item.unitPrice(),           numStyle);
+                        setL(row, 20, fmtVatRate(item.vatRate()), dataStyle);
                     } else {
-                        for (int bc = 14; bc <= 19; bc++) {
+                        for (int bc = 14; bc <= LAST_COL; bc++) {
                             row.createCell(bc).setCellStyle(dataStyle);
                         }
                     }
@@ -335,9 +370,10 @@ public class SellerOrderExportService {
                 28,  // 14 Tên SP
                 8,   // 15 Đơn vị
                 8,   // 16 SL
-                12,  // 17 Giá gốc
-                12,  // 18 Giá bán
-                8    // 19 VAT%
+                12,  // 17 Giá vốn
+                12,  // 18 Giá gốc
+                12,  // 19 Giá bán
+                8    // 20 VAT%
         };
         for (int i = 0; i < widths.length; i++)
             sheet.setColumnWidth(i, widths[i] * 256);

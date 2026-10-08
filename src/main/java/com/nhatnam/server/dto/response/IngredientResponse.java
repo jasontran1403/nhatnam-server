@@ -16,6 +16,7 @@ public class IngredientResponse {
     private String name;
     private String unit;
     private BigDecimal stockQuantity;
+    private BigDecimal costPrice;
     private String imageUrl;
     private Long createdAt;
     private Long updatedAt;

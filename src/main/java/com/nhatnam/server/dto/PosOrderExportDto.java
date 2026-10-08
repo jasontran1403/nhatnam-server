@@ -16,7 +16,9 @@ public record PosOrderExportDto(
         String ingredientName,
         BigDecimal ingredientQty,
         Integer ingredientSelectedCount,
-        String ingredientUnitWeights        // ← THÊM
+        String ingredientUnitWeights,       // ← THÊM
+        BigDecimal ingredientAddonPrice,    // giá addon gốc (null = không phải addon)
+        BigDecimal ingredientAddonPriceNet  // giá addon sau giảm giá app + phí sàn
 ) {
     public double getDiscount() {
         if (totalAmount == null || finalAmount == null) return 0;
@@ -30,6 +32,15 @@ public record PosOrderExportDto(
     public boolean hasItem() { return productName != null; }
 
     public boolean hasIngredient() { return ingredientName != null; }
+
+    /** Nguyên liệu này được bán dưới dạng addon (có giá riêng). */
+    public boolean isAddonIngredient() { return ingredientAddonPrice != null; }
+
+    /** Giá addon quán thực nhận; fallback về giá gốc cho dữ liệu cũ. */
+    public BigDecimal addonNetOrGross() {
+        if (ingredientAddonPriceNet != null) return ingredientAddonPriceNet;
+        return ingredientAddonPrice;
+    }
 
     public double getIngredientDisplayQty() {
         if (ingredientUnitWeights != null && !ingredientUnitWeights.isBlank()

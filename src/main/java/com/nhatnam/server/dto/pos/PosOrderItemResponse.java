@@ -21,6 +21,17 @@ public class PosOrderItemResponse {
     private String     note;
     private BigDecimal addonAmount;
 
+    // ── Ý 2: bán xé lẻ ────────────────────────────────────────────
+    /** true = dòng này là hàng xé lẻ (quantity luôn = 1). */
+    private Boolean    looseSale;
+    /** Số lượng xé lẻ theo đơn vị nhỏ nhất (2 miếng / 0.25 kg). */
+    private BigDecimal looseQuantity;
+    /** Đơn vị nhỏ nhất khi xé lẻ ("Miếng" / "Kg"). */
+    private String     looseUnit;
+    /** Đơn vị chính của nguyên liệu ("Túi" / "Kg"). */
+    private String     looseMainUnit;
+    private Long       looseIngredientId;
+
     // Nguyên liệu đã chọn — gom theo từng variant group
     private List<VariantSelectionResponse> variantSelections;
 

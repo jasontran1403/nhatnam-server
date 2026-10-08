@@ -1,6 +1,7 @@
 package com.nhatnam.server.repository.pos;
 
 import com.nhatnam.server.entity.pos.PosIngredient;
+import com.nhatnam.server.enumtype.IngredientType;
 import org.springframework.data.jpa.repository.JpaRepository;
 import java.util.List;
 
@@ -12,4 +13,7 @@ public interface PosIngredientRepository extends JpaRepository<PosIngredient, Lo
     List<PosIngredient> findByStoreIdAndIsActive(Long storeId, boolean isActive);
 
     List<PosIngredient> findByStoreId(Long storeId);
+
+    List<PosIngredient> findByStoreIdAndIngredientTypeAndIsActiveTrue(
+            Long storeId, IngredientType ingredientType);
 }

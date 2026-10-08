@@ -71,14 +71,17 @@ public class IngredientReportExport {
     // Col 1: Nhà cung cấp
     // Col 2: Mã phiếu
     // Col 3: Thời gian
-    // Col 4: Note  ← MỚI
+    // Col 4: Note
     // Col 5: Tên nguyên liệu
     // Col 6: ĐVT
     // Col 7: Số lượng
-    // Col 8: gap
-    // Col 9: Tên NL (tồn kho)
-    // Col 10: ĐVT
-    // Col 11: Tồn
+    // Col 8: Giá vốn      ← MỚI
+    // Col 9: gap
+    // Col 10: Tên NL (tồn kho)
+    // Col 11: ĐVT
+    // Col 12: Tồn
+    // Col 13: Giá vốn (tồn kho)
+    // Col 14: Tổng giá trị
 
     // ── Internal DTOs ─────────────────────────────────────────────
     private record ReportRow(
@@ -91,10 +94,11 @@ public class IngredientReportExport {
             String     note,        // reason stripped, "" nếu SALE
             String     ingredientName,
             String     unit,
-            BigDecimal qty
+            BigDecimal qty,
+            BigDecimal costPrice   // ← MỚI: giá vốn tại thời điểm
     ) {}
 
-    private record AggIngredient(String name, String unit, BigDecimal qty) {}
+    private record AggIngredient(String name, String unit, BigDecimal qty, BigDecimal costPrice) {}
 
     // ════════════════════════════════════════════════════════════
     // PUBLIC ENTRY
@@ -111,8 +115,9 @@ public class IngredientReportExport {
             XSSFSheet ws = wb.createSheet("Báo cáo kho");
             ws.createFreezePane(0, 4);
 
-            // Cols 0–7: left table | Col 8: gap | Cols 9–11: right table
-            int[] widths = {5, 26, 30, 18, 28, 26, 10, 12, 3, 26, 10, 12};
+            // Cols 0–8: left table | Col 9: gap | Cols 10–14: right table
+            // Right table: 10 Tên NL | 11 ĐVT | 12 Tồn | 13 Giá vốn | 14 Tổng giá trị
+            int[] widths = {5, 26, 30, 18, 28, 26, 10, 12, 14, 3, 26, 10, 12, 14, 18};
             for (int i = 0; i < widths.length; i++)
                 ws.setColumnWidth(i, widths[i] * 256);
 
@@ -176,17 +181,30 @@ public class IngredientReportExport {
             batch.getLogs().stream()
                     .filter(log -> log.getQuantity().compareTo(BigDecimal.ZERO) != 0)
                     .sorted(Comparator.comparing(l -> l.getIngredient().getName()))
-                    .forEach(log -> result.add(new ReportRow(
-                            actionKey, actionLabel, code,
-                            supplierName,
-                            timeStr, epoch,
-                            // ADJUST không có note
-                            actionKey.equals("ADJUST") ? "" :
-                                    firstNonBlank(batchNote, stripBatchPrefix(log.getReason())),
-                            log.getIngredient().getName(),
-                            log.getIngredient().getUnit(),
-                            log.getQuantity().abs()
-                    )));
+                    .forEach(log -> {
+                        // ── Lấy giá vốn ──────────────────────────────
+                        BigDecimal costPrice = null;
+                        if ("IMPORT".equals(actionKey) || "EXPORT".equals(actionKey)) {
+                            // IMPORT: lấy giá vốn từ batch log (unitPrice)
+                            // EXPORT: lấy giá vốn từ batch log (đã được lưu khi xuất)
+                            costPrice = log.getUnitPrice() != null
+                                    ? log.getUnitPrice()
+                                    : BigDecimal.ZERO;
+                        }
+                        // ADJUST không hiển thị giá vốn
+
+                        result.add(new ReportRow(
+                                actionKey, actionLabel, code,
+                                supplierName,
+                                timeStr, epoch,
+                                actionKey.equals("ADJUST") ? "" :
+                                        firstNonBlank(batchNote, stripBatchPrefix(log.getReason())),
+                                log.getIngredient().getName(),
+                                log.getIngredient().getUnit(),
+                                log.getQuantity().abs(),
+                                costPrice  // ← MỚI
+                        ));
+                    });
         }
 
         // ── 2. Orders (SALE — xuất bán) ──────────────────────────
@@ -205,10 +223,19 @@ public class IngredientReportExport {
             for (OrderItemIngredient oii : oiis) {
                 aggMap.merge(
                         oii.getIngredientId(),
-                        new AggIngredient(oii.getIngredientName(),
-                                oii.getUnit(), oii.getQuantityUsed()),
+                        new AggIngredient(
+                                oii.getIngredientName(),
+                                oii.getUnit(),
+                                oii.getQuantityUsed(),
+                                oii.getCostPrice() != null ? oii.getCostPrice() : BigDecimal.ZERO
+                        ),
                         (a, b) -> new AggIngredient(
-                                a.name(), a.unit(), a.qty().add(b.qty()))
+                                a.name(), a.unit(), a.qty().add(b.qty()),
+                                // Giá vốn trung bình (weighted average)
+                                a.qty().multiply(a.costPrice())
+                                        .add(b.qty().multiply(b.costPrice()))
+                                        .divide(a.qty().add(b.qty()), 2, java.math.RoundingMode.HALF_UP)
+                        )
                 );
             }
 
@@ -221,7 +248,8 @@ public class IngredientReportExport {
                             "",     // không hiển thị NCC cho xuất bán
                             timeStr, epoch,
                             "",     // không có note cho xuất bán
-                            agg.name(), agg.unit(), agg.qty()
+                            agg.name(), agg.unit(), agg.qty(),
+                            agg.costPrice()  // ← MỚI: giá vốn bình quân
                     )));
         }
 
@@ -304,7 +332,7 @@ public class IngredientReportExport {
                     row.createCell(3).setCellStyle(sc.center(rowBg, "37474F", false));
                 }
 
-                // Col 4 — Note (merge) ← MỚI
+                // Col 4 — Note (merge)
                 if (isFirst) {
                     Cell c = row.createCell(4);
                     c.setCellValue(rr.note());
@@ -329,6 +357,19 @@ public class IngredientReportExport {
                 Cell cQty = row.createCell(7);
                 cQty.setCellValue(rr.qty().doubleValue());
                 cQty.setCellStyle(sc.number(rowBg, qtyFg));
+
+                // ── Col 8 — Giá vốn ─────────────────────────────────
+                // Chỉ hiển thị cho IMPORT và SALE, các loại khác để trống
+                Cell cCost = row.createCell(8);
+// Hiển thị cho IMPORT, EXPORT và SALE
+                if (("IMPORT".equals(rr.actionKey()) || "EXPORT".equals(rr.actionKey()) || "SALE".equals(rr.actionKey()))
+                        && rr.costPrice() != null) {
+                    cCost.setCellValue(rr.costPrice().doubleValue());
+                    cCost.setCellStyle(sc.money(rowBg, "0D47A1"));
+                } else {
+                    cCost.setCellStyle(sc.text(rowBg, "B0BEC5", false, false));
+                    // Không set cell value → để trống
+                }
             }
 
             curRow += n;
@@ -337,7 +378,7 @@ public class IngredientReportExport {
     }
 
     // ════════════════════════════════════════════════════════════
-    // STOCK TABLE (col 9, 10, 11 — không có total row)
+    // STOCK TABLE (col 10, 11, 12, 13, 14)
     // ════════════════════════════════════════════════════════════
     private void buildStockTable(XSSFSheet ws, StyleCache sc,
                                  List<Ingredient> ingredients) {
@@ -351,18 +392,32 @@ public class IngredientReportExport {
 
             String bg = i % 2 == 0 ? ROW_ODD : ROW_EVEN;
 
-            Cell cName = row.createCell(9);
+            Cell cName = row.createCell(10);
             cName.setCellValue(ing.getName());
             cName.setCellStyle(sc.text(bg, "212121", false, false));
 
-            Cell cUnit = row.createCell(10);
+            Cell cUnit = row.createCell(11);
             cUnit.setCellValue(ing.getUnit());
             cUnit.setCellStyle(sc.center(bg, "37474F", false));
 
-            Cell cQty = row.createCell(11);
+            Cell cQty = row.createCell(12);
             BigDecimal stock = ing.getStockQuantity();
             cQty.setCellValue(stock != null ? stock.doubleValue() : 0);
             cQty.setCellStyle(sc.number(bg, "E65100"));
+
+            // Col 13 — Giá vốn (1 ĐVT)
+            BigDecimal cost = ing.getCostPrice();
+            Cell cCost = row.createCell(13);
+            cCost.setCellValue(cost != null ? cost.doubleValue() : 0);
+            cCost.setCellStyle(sc.money(bg, "1B5E20"));
+
+            // Col 14 — Tổng giá trị = Tồn * Giá vốn
+            BigDecimal s = stock != null ? stock : BigDecimal.ZERO;
+            BigDecimal c = cost  != null ? cost  : BigDecimal.ZERO;
+            BigDecimal totalValue = s.multiply(c);
+            Cell cTotal = row.createCell(14);
+            cTotal.setCellValue(totalValue.doubleValue());
+            cTotal.setCellStyle(sc.money(bg, "0D47A1"));
         }
     }
 
@@ -374,19 +429,19 @@ public class IngredientReportExport {
         Row row = ws.createRow(rowIdx);
         row.setHeightInPoints(36);
 
-        // Left table: col 0–7
+        // Left table: col 0–8 (thêm 1 cột)
         Cell c = row.createCell(0);
         c.setCellValue(leftTitle);
         c.setCellStyle(sc.mainTitle());
-        ws.addMergedRegion(new CellRangeAddress(rowIdx, rowIdx, 0, 7));
+        ws.addMergedRegion(new CellRangeAddress(rowIdx, rowIdx, 0, 8));
 
-        row.createCell(8); // gap
+        row.createCell(9); // gap
 
-        // Right table: col 9–11
-        Cell r = row.createCell(9);
+        // Right table: col 10–14
+        Cell r = row.createCell(10);
         r.setCellValue(rightTitle);
         r.setCellStyle(sc.stockTitle());
-        ws.addMergedRegion(new CellRangeAddress(rowIdx, rowIdx, 9, 11));
+        ws.addMergedRegion(new CellRangeAddress(rowIdx, rowIdx, 10, 14));
     }
 
     private void buildSubtitleRow(XSSFSheet ws, StyleCache sc, int rowIdx,
@@ -397,18 +452,18 @@ public class IngredientReportExport {
         Cell c = row.createCell(0);
         c.setCellValue(subtitle);
         c.setCellStyle(sc.subTitle());
-        ws.addMergedRegion(new CellRangeAddress(rowIdx, rowIdx, 0, 7));
+        ws.addMergedRegion(new CellRangeAddress(rowIdx, rowIdx, 0, 8));
 
-        Cell r = row.createCell(9);
+        Cell r = row.createCell(10);
         r.setCellValue("Cập nhật: " + LocalDateTime.now(VN).format(DT_FMT));
         r.setCellStyle(sc.stockSubtitle());
-        ws.addMergedRegion(new CellRangeAddress(rowIdx, rowIdx, 9, 11));
+        ws.addMergedRegion(new CellRangeAddress(rowIdx, rowIdx, 10, 14));
     }
 
     private void buildSpacerRow(XSSFSheet ws, StyleCache sc, int rowIdx) {
         Row row = ws.createRow(rowIdx);
         row.setHeightInPoints(10);
-        for (int col = 0; col < 8; col++)
+        for (int col = 0; col < 9; col++)  // ← 9 cột (0-8)
             row.createCell(col).setCellStyle(sc.spacer());
     }
 
@@ -416,10 +471,10 @@ public class IngredientReportExport {
         Row row = ws.createRow(rowIdx);
         row.setHeightInPoints(18);
 
-        // Left table — 8 cols (thêm Note ở col 4)
+        // Left table — 9 cols (thêm Giá vốn ở col 8)
         String[] leftHeaders = {
                 "STT", "Nhà cung cấp", "Mã phiếu", "Thời gian", "Ghi chú",
-                "Tên nguyên liệu", "Đơn vị tính", "Số lượng"
+                "Tên nguyên liệu", "Đơn vị tính", "Số lượng", "Giá vốn"
         };
         for (int i = 0; i < leftHeaders.length; i++) {
             Cell cell = row.createCell(i);
@@ -427,10 +482,11 @@ public class IngredientReportExport {
             cell.setCellStyle(sc.colHeader());
         }
 
-        // Right table — col 9, 10, 11
-        String[] rightHeaders = {"Tên nguyên liệu", "Đơn vị tính", "Số lượng tồn"};
+        // Right table — col 10, 11, 12, 13, 14
+        String[] rightHeaders =
+                {"Tên nguyên liệu", "Đơn vị tính", "Số lượng tồn", "Giá vốn", "Tổng giá trị"};
         for (int i = 0; i < rightHeaders.length; i++) {
-            Cell cell = row.createCell(9 + i);
+            Cell cell = row.createCell(10 + i);
             cell.setCellValue(rightHeaders[i]);
             cell.setCellStyle(sc.stockColHeader());
         }
@@ -641,6 +697,23 @@ public class IngredientReportExport {
                 s.setFont(f);
                 s.setAlignment(HorizontalAlignment.RIGHT);
                 s.setDataFormat(wb.createDataFormat().getFormat("#,##0.##"));
+                return s;
+            });
+        }
+
+        XSSFCellStyle money(String bg, String fg) {
+            String key = "money_" + bg + fg;
+            return cache.computeIfAbsent(key, k -> {
+                XSSFCellStyle s = base();
+                s.setFillForegroundColor(color(bg));
+                s.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+                XSSFFont f = wb.createFont();
+                f.setFontName("Arial"); f.setBold(true);
+                f.setFontHeightInPoints((short) 9);
+                f.setColor(color(fg));
+                s.setFont(f);
+                s.setAlignment(HorizontalAlignment.RIGHT);
+                s.setDataFormat(wb.createDataFormat().getFormat("#,##0"));
                 return s;
             });
         }

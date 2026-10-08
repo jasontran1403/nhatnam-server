@@ -53,6 +53,29 @@ public class CreatePosOrderRequest {
 
         private BigDecimal finalUnitPrice;   // Giá thực tế sau khi user chỉnh sửa (App mode)
 
+        /**
+         * Ý 2: dòng này bán xé lẻ.
+         *
+         * Khi looseSale = true:
+         *  - quantity BẮT BUỘC = 1 (mỗi lần xé lẻ là 1 dòng riêng, client không gộp)
+         *  - finalUnitPrice = giá tay user nhập cho cả lần xé (bắt buộc > 0)
+         *  - looseQuantity  = số lượng theo đơn vị nhỏ nhất (2 miếng / 0.25 kg)
+         *  - discountPercent phải = 0 (giá đã là giá tay)
+         */
+        private Boolean looseSale;
+
+        /** Ý 2: số lượng xé lẻ theo đơn vị nhỏ nhất. */
+        private BigDecimal looseQuantity;
+
+        /** Ý 2: đơn vị nhỏ nhất ("Miếng" / "Kg") — chỉ để snapshot hiển thị. */
+        private String looseUnit;
+
+        /** Ý 2: đơn vị chính ("Túi" / "Kg") — chỉ để snapshot hiển thị. */
+        private String looseMainUnit;
+
+        /** Ý 2: id nguyên liệu được xé lẻ (server vẫn tự verify lại). */
+        private Long looseIngredientId;
+
         @Data
         public static class SelectedIngredient {
 

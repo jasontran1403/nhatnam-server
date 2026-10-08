@@ -70,5 +70,10 @@ public class InventoryLog {
     @JoinColumn(name = "user_id", nullable = false)
     private User user;
 
+    /** Kho mà log này thuộc về — null = kho chung (backward compat) */
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "warehouse_id")
+    private com.nhatnam.server.entity.Warehouse warehouse;
+
     private Long createdAt;
 }

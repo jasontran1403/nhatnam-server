@@ -302,10 +302,16 @@ public class PosService {
                 .name(req.getName()).imageUrl(req.getImageUrl())
                 .unit(req.getUnit() != null && !req.getUnit().isBlank()   // ← THÊM
                         ? req.getUnit() : "Cái")
-                .unitPerPack(req.getUnitPerPack() != null ? req.getUnitPerPack() : 1)
+                .unitPerPack(req.getUnitPerPack() != null ? req.getUnitPerPack() : BigDecimal.ONE)
                 .displayOrder(req.getDisplayOrder() != null ? req.getDisplayOrder() : 0)
                 .ingredientType(req.getIngredientType() != null ? req.getIngredientType() : IngredientType.MAIN)
                 .addonPrice(req.getAddonPrice() != null ? req.getAddonPrice() : BigDecimal.ZERO)
+                .hotSaleEnabled(Boolean.TRUE.equals(req.getHotSaleEnabled()))
+                .hotSalesPerBag(req.getHotSalesPerBag())
+                .hotQtyPerSale(req.getHotQtyPerSale())
+                .hotSaleUnit(req.getHotSaleUnit())
+                .looseSaleEnabled(Boolean.TRUE.equals(req.getLooseSaleEnabled()))
+                .looseUnit(req.getLooseUnit())
                 .storeId(storeId)
                 .isActive(true).createdAt(now).updatedAt(now).build();
         return toIngredientResponse(ingredientRepo.save(ing));
@@ -322,14 +328,88 @@ public class PosService {
         if (req.getIngredientType() != null) ing.setIngredientType(req.getIngredientType());
         if (req.getAddonPrice() != null)    ing.setAddonPrice(req.getAddonPrice());
         if (req.getUnit() != null && !req.getUnit().isBlank()) ing.setUnit(req.getUnit()); // ← THÊM
-        if (req.getName() != null)          ing.setName(req.getName());
+        if (req.getHotSaleEnabled() != null)  ing.setHotSaleEnabled(req.getHotSaleEnabled());
+        if (req.getHotSalesPerBag() != null)  ing.setHotSalesPerBag(req.getHotSalesPerBag());
+        if (req.getHotQtyPerSale() != null)   ing.setHotQtyPerSale(req.getHotQtyPerSale());
+        if (req.getHotSaleUnit() != null)     ing.setHotSaleUnit(req.getHotSaleUnit());
+        if (req.getLooseSaleEnabled() != null) ing.setLooseSaleEnabled(req.getLooseSaleEnabled());
+        if (req.getLooseUnit() != null)     ing.setLooseUnit(req.getLooseUnit());
         ing.setUpdatedAt(System.currentTimeMillis());
         return toIngredientResponse(ingredientRepo.save(ing));
     }
 
-    // Trong PosService.java — thay thế toàn bộ method deleteIngredient
+    /**
+     * Cập nhật thứ tự (displayOrder) cho nhiều nguyên liệu cùng lúc.
+     * Chỉ áp dụng cho nguyên liệu thuộc store của người gọi.
+     */
+    @Transactional
+    public void reorderIngredients(ReorderRequest req, Long storeId) {
+        if (req == null || req.getItems() == null || req.getItems().isEmpty()) return;
 
-    // Trong PosService.java — thay thế toàn bộ method deleteIngredient
+        final Map<Long, Integer> orderMap = new HashMap<>();
+        for (ReorderRequest.Item it : req.getItems()) {
+            if (it != null && it.getId() != null && it.getDisplayOrder() != null) {
+                orderMap.put(it.getId(), it.getDisplayOrder());
+            }
+        }
+        if (orderMap.isEmpty()) return;
+
+        final List<PosIngredient> ings = ingredientRepo.findAllById(orderMap.keySet());
+        final long now = System.currentTimeMillis();
+        for (PosIngredient ing : ings) {
+            // Bảo vệ: chỉ đổi thứ tự nguyên liệu thuộc đúng store của người gọi.
+            if (!Objects.equals(ing.getStoreId(), storeId)) continue;
+            ing.setDisplayOrder(orderMap.get(ing.getId()));
+            ing.setUpdatedAt(now);
+        }
+        ingredientRepo.saveAll(ings);
+    }
+
+    /** Cập nhật thứ tự (displayOrder) cho nhiều sản phẩm cùng lúc. */
+    @Transactional
+    public void reorderProducts(ReorderRequest req, Long storeId) {
+        if (req == null || req.getItems() == null || req.getItems().isEmpty()) return;
+
+        final Map<Long, Integer> orderMap = new HashMap<>();
+        for (ReorderRequest.Item it : req.getItems()) {
+            if (it != null && it.getId() != null && it.getDisplayOrder() != null) {
+                orderMap.put(it.getId(), it.getDisplayOrder());
+            }
+        }
+        if (orderMap.isEmpty()) return;
+
+        final List<PosProduct> products = productRepo.findAllById(orderMap.keySet());
+        final long now = System.currentTimeMillis();
+        for (PosProduct p : products) {
+            if (!Objects.equals(p.getStoreId(), storeId)) continue;
+            p.setDisplayOrder(orderMap.get(p.getId()));
+            p.setUpdatedAt(now);
+        }
+        productRepo.saveAll(products);
+    }
+
+    /** Cập nhật thứ tự (displayOrder) cho nhiều danh mục cùng lúc. */
+    @Transactional
+    public void reorderCategories(ReorderRequest req, Long storeId) {
+        if (req == null || req.getItems() == null || req.getItems().isEmpty()) return;
+
+        final Map<Long, Integer> orderMap = new HashMap<>();
+        for (ReorderRequest.Item it : req.getItems()) {
+            if (it != null && it.getId() != null && it.getDisplayOrder() != null) {
+                orderMap.put(it.getId(), it.getDisplayOrder());
+            }
+        }
+        if (orderMap.isEmpty()) return;
+
+        final List<PosCategory> cats = categoryRepo.findAllById(orderMap.keySet());
+        final long now = System.currentTimeMillis();
+        for (PosCategory c : cats) {
+            if (!Objects.equals(c.getStoreId(), storeId)) continue;
+            c.setDisplayOrder(orderMap.get(c.getId()));
+            c.setUpdatedAt(now);
+        }
+        categoryRepo.saveAll(cats);
+    }
 
     @Transactional
     public void deleteIngredient(Long id) {
@@ -480,6 +560,27 @@ public class PosService {
     // VARIANT (không cần storeId — variant thuộc product)
     // ════════════════════════════════════════
 
+    /**
+     * Chuẩn hoá 1 giá addon gửi từ client (theo từng kênh bán).
+     *
+     *  - Nhóm KHÔNG phải addon  → luôn null (không có khái niệm giá addon)
+     *  - client không gửi       → null, khi bán sẽ fallback
+     *  - số âm                  → lỗi
+     *  - còn lại (kể cả 0)      → lưu đúng giá đó
+     *
+     * KHÔNG quy về null khi trùng giá mặc định: với 3 giá theo kênh, việc đó
+     * sẽ khiến giá app rơi nhầm về giá tại quán khi hai giá vô tình bằng nhau.
+     */
+    private BigDecimal _resolveAddonOverride(boolean isAddonGroup,
+                                             BigDecimal requested,
+                                             PosIngredient ing) {
+        if (!isAddonGroup || requested == null) return null;
+        if (requested.compareTo(BigDecimal.ZERO) < 0)
+            throw new IllegalArgumentException(
+                    "Giá addon của '" + ing.getName() + "' không được âm.");
+        return requested;
+    }
+
     private void _normalizeDefault(PosProduct product, PosVariant changedVariant) {
         List<PosVariant> regularVariants = variantRepo
                 .findByProductAndIsActiveTrueOrderByDisplayOrderAsc(product)
@@ -535,6 +636,9 @@ public class PosService {
                     .stockDeductPerUnit(item.getStockDeductPerUnit() != null ? item.getStockDeductPerUnit() : BigDecimal.ONE)
                     .maxSelectableCount(item.getMaxSelectableCount())
                     .subGroupTag(item.getSubGroupTag()).subGroupMaxSelect(item.getSubGroupMaxSelect())
+                    .addonPriceOverride(_resolveAddonOverride(isAddon, item.getAddonPrice(), ing))
+                    .addonPriceShopee(_resolveAddonOverride(isAddon, item.getAddonPriceShopee(), ing))
+                    .addonPriceGrab(_resolveAddonOverride(isAddon, item.getAddonPriceGrab(), ing))
                     .displayOrder(item.getDisplayOrder() != null ? item.getDisplayOrder() : 0).build());
         }
         variantIngredientRepo.saveAll(ingredients);
@@ -571,6 +675,12 @@ public class PosService {
                         .stockDeductPerUnit(item.getStockDeductPerUnit() != null ? item.getStockDeductPerUnit() : BigDecimal.ONE)
                         .maxSelectableCount(item.getMaxSelectableCount())
                         .subGroupTag(item.getSubGroupTag()).subGroupMaxSelect(item.getSubGroupMaxSelect())
+                        .addonPriceOverride(_resolveAddonOverride(
+                                Boolean.TRUE.equals(variant.getIsAddonGroup()), item.getAddonPrice(), ing))
+                        .addonPriceShopee(_resolveAddonOverride(
+                                Boolean.TRUE.equals(variant.getIsAddonGroup()), item.getAddonPriceShopee(), ing))
+                        .addonPriceGrab(_resolveAddonOverride(
+                                Boolean.TRUE.equals(variant.getIsAddonGroup()), item.getAddonPriceGrab(), ing))
                         .displayOrder(item.getDisplayOrder() != null ? item.getDisplayOrder() : 0).build());
             }
             variantIngredientRepo.saveAll(newIngs);
@@ -668,7 +778,7 @@ public class PosService {
                         .ingredientType(ing.getIngredientType() != null   // ← THÊM
                                 ? ing.getIngredientType().name() : "MAIN")
                         .unitPerPack(ing.getUnitPerPack() != null    // ← THÊM
-                                ? ing.getUnitPerPack() : 1)
+                                ? ing.getUnitPerPack() : BigDecimal.ONE)
                         .packQuantity(item.getPackQuantity() != null ? item.getPackQuantity() : 0)
                         .unitQuantity(item.getUnitQuantity() != null
                                 ? item.getUnitQuantity().setScale(2, RoundingMode.HALF_UP)
@@ -723,7 +833,7 @@ public class PosService {
                     .ingredientType(ing.getIngredientType() != null   // ← THÊM
                             ? ing.getIngredientType().name() : "MAIN")
                     .unitPerPack(ing.getUnitPerPack() != null    // ← THÊM
-                            ? ing.getUnitPerPack() : 1)
+                            ? ing.getUnitPerPack() : BigDecimal.ONE)
                     .packQuantity(item.getPackQuantity() != null ? item.getPackQuantity() : 0)
                     .unitQuantity(item.getUnitQuantity() != null
                             ? item.getUnitQuantity().setScale(2, RoundingMode.HALF_UP)
@@ -763,6 +873,131 @@ public class PosService {
     private final PosAccumulationService  accumulationService;
     private final PosEVoucherRepository eVoucherRepo;
     private final PosEVoucherUsageLogRepository eVoucherUsageLogRepo;
+
+    // ══════════════════════════════════════════════════════════════════
+    // Ý 2 — BÁN XÉ LẺ
+    // ══════════════════════════════════════════════════════════════════
+
+    /**
+     * Snapshot cấu hình xé lẻ đã được SERVER verify cho 1 order item.
+     * Không tin dữ liệu client gửi lên: ingredientId / đơn vị đều được
+     * đối chiếu lại với cấu hình nguyên liệu trong DB.
+     */
+    public record LooseInfo(
+            Long       ingredientId,
+            String     looseUnit,     // đơn vị nhỏ nhất: "Miếng" / "Kg"
+            String     mainUnit,      // đơn vị chính:    "Túi"   / "Kg"
+            BigDecimal quantity       // số lượng theo đơn vị nhỏ nhất
+    ) {}
+
+    /**
+     * Validate + resolve thông tin xé lẻ cho 1 order item.
+     *
+     * Quy tắc bắt buộc:
+     *  - quantity = 1 (mỗi lần xé lẻ là 1 dòng độc lập, client KHÔNG gộp dòng)
+     *  - finalUnitPrice > 0 (giá tay)
+     *  - discountPercent = 0 (giá đã là giá tay, không chồng thêm % giảm)
+     *  - phải có đúng 1 nguyên liệu (non-addon) bật looseSaleEnabled trong
+     *    variantSelections, và nguyên liệu đó phải thuộc variant của sản phẩm
+     *  - số lượng xé lẻ > 0
+     *
+     * @return LooseInfo đã verify, hoặc null nếu item không phải hàng xé lẻ.
+     */
+    private LooseInfo resolveLooseInfo(
+            CreatePosOrderRequest.OrderItemRequest itemReq,
+            PosProduct product) {
+
+        if (!Boolean.TRUE.equals(itemReq.getLooseSale())) return null;
+
+        String pName = product.getName();
+
+        if (itemReq.getQuantity() == null || itemReq.getQuantity() != 1)
+            throw new IllegalArgumentException(
+                    "'" + pName + "': mỗi lần bán xé lẻ phải là 1 dòng riêng (quantity = 1).");
+
+        if (itemReq.getFinalUnitPrice() == null
+                || itemReq.getFinalUnitPrice().compareTo(BigDecimal.ZERO) <= 0)
+            throw new IllegalArgumentException(
+                    "'" + pName + "': bán xé lẻ bắt buộc nhập giá bán > 0.");
+
+        if (itemReq.getDiscountPercent() != null && itemReq.getDiscountPercent() != 0)
+            throw new IllegalArgumentException(
+                    "'" + pName + "': hàng xé lẻ đã là giá tay, không áp dụng giảm %.");
+
+        if (itemReq.getVariantSelections() == null || itemReq.getVariantSelections().isEmpty())
+            throw new IllegalArgumentException(
+                    "'" + pName + "': thiếu nguyên liệu cho hàng xé lẻ.");
+
+        // ── Tìm nguyên liệu bật looseSaleEnabled trong các nhóm non-addon ──
+        PosIngredient looseIng = null;
+        BigDecimal    fromWeights = null;
+
+        for (var sel : itemReq.getVariantSelections()) {
+            if (Boolean.TRUE.equals(sel.getIsAddonGroup())) continue;
+
+            PosVariant variant = variantRepo.findById(sel.getVariantId())
+                    .orElseThrow(() -> new RuntimeException(
+                            "Variant not found: " + sel.getVariantId()));
+            if (!variant.getProduct().getId().equals(product.getId()))
+                throw new IllegalArgumentException("Variant không thuộc sản phẩm này.");
+
+            Map<Long, PosVariantIngredient> viMap = variantIngredientRepo.findByVariant(variant)
+                    .stream().collect(Collectors.toMap(vi -> vi.getIngredient().getId(), vi -> vi));
+
+            for (var s : sel.getSelectedIngredients()) {
+                PosVariantIngredient vi = viMap.get(s.getIngredientId());
+                if (vi == null) continue;
+                PosIngredient ing = vi.getIngredient();
+                if (!Boolean.TRUE.equals(ing.getLooseSaleEnabled())) continue;
+
+                if (looseIng != null && !looseIng.getId().equals(ing.getId()))
+                    throw new IllegalArgumentException(
+                            "'" + pName + "': chỉ được xé lẻ 1 nguyên liệu trên mỗi dòng.");
+
+                looseIng = ing;
+                // unitWeights[] chính là số lượng xé lẻ (đơn vị nhỏ nhất)
+                if (s.getUnitWeights() != null && !s.getUnitWeights().isEmpty()) {
+                    fromWeights = s.getUnitWeights().stream()
+                            .reduce(BigDecimal.ZERO, BigDecimal::add);
+                }
+            }
+        }
+
+        if (looseIng == null)
+            throw new IllegalArgumentException(
+                    "'" + pName + "': không có nguyên liệu nào được bật bán xé lẻ.");
+
+        // Client có gửi looseIngredientId thì phải khớp với thứ server tìm được
+        if (itemReq.getLooseIngredientId() != null
+                && !itemReq.getLooseIngredientId().equals(looseIng.getId()))
+            throw new IllegalArgumentException(
+                    "'" + pName + "': nguyên liệu xé lẻ không hợp lệ.");
+
+        // Số lượng: ưu tiên looseQuantity, fallback về tổng unitWeights
+        BigDecimal qty = itemReq.getLooseQuantity() != null
+                ? itemReq.getLooseQuantity()
+                : fromWeights;
+
+        if (qty == null || qty.compareTo(BigDecimal.ZERO) <= 0)
+            throw new IllegalArgumentException(
+                    "'" + pName + "': số lượng xé lẻ phải > 0.");
+
+        // Nếu gửi cả 2 thì phải khớp nhau (tránh lệch số trừ kho vs số hiển thị)
+        if (itemReq.getLooseQuantity() != null && fromWeights != null
+                && itemReq.getLooseQuantity().compareTo(fromWeights) != 0)
+            throw new IllegalArgumentException(
+                    "'" + pName + "': số lượng xé lẻ không khớp định lượng trừ kho.");
+
+        // Đơn vị lấy từ CẤU HÌNH nguyên liệu, không tin client
+        String looseUnit = (looseIng.getLooseUnit() != null && !looseIng.getLooseUnit().isBlank())
+                ? looseIng.getLooseUnit()
+                : (itemReq.getLooseUnit() != null ? itemReq.getLooseUnit() : "");
+        String mainUnit = (looseIng.getUnit() != null && !looseIng.getUnit().isBlank())
+                ? looseIng.getUnit()
+                : (itemReq.getLooseMainUnit() != null ? itemReq.getLooseMainUnit() : "");
+
+        return new LooseInfo(looseIng.getId(), looseUnit, mainUnit, qty);
+    }
 
     @Transactional
     public PosOrderResponse createOrder(CreatePosOrderRequest req, Long userId, Long storeId) {
@@ -805,12 +1040,20 @@ public class PosService {
                 BigDecimal subtotal,            // finalUnitPrice×qty + addonNet
                 int vatPercent,
                 BigDecimal vatAmount,
-                BigDecimal addonAmount,         // addon net (đã × (1-rate) nếu app)
+                BigDecimal addonAmount,         // addon net (đã trừ giảm giá + rate nếu app)
                 BigDecimal addonRaw,            // addon trước rate (để tính totalAmount)
                 List<CreatePosOrderRequest.OrderItemRequest.VariantSelection> variantSelections,
                 String note,
                 String categoryName,
-                BigDecimal requestedFinalUnitPrice
+                BigDecimal requestedFinalUnitPrice,
+                boolean looseSale,
+                LooseInfo looseInfo,         // ← Ý 2: null nếu không phải xé lẻ
+                // key = variantId + ":" + ingredientId → giá addon/1 lần chọn do
+                // SERVER quyết định (override của món ?? giá mặc định nguyên liệu)
+                Map<String, BigDecimal> addonPrices,
+                // hệ số quy đổi giá addon gộp → giá thực nhận (giảm giá app × phí sàn).
+                // Offline = 1. Dùng để snapshot addonPriceNet cho từng nguyên liệu.
+                BigDecimal addonNetFactor
         ) {}
 
         List<CalcItem> calcs = new ArrayList<>();
@@ -822,10 +1065,19 @@ public class PosService {
             if (!storeId.equals(product.getStoreId()))
                 throw new IllegalArgumentException("Sản phẩm '" + product.getName() + "' không thuộc store của bạn.");
 
+            // ── Ý 2: verify cấu hình xé lẻ (null nếu bán nguyên túi) ──
+            LooseInfo looseInfo = resolveLooseInfo(itemReq, product);
+
             BigDecimal basePrice;
             int discountPercent = 0;
 
-            if (isAppOrder) {
+            if (looseInfo != null) {
+                // Hàng xé lẻ: giá tay CHÍNH LÀ giá gốc của dòng này.
+                // Không dùng product.getBasePrice() — nếu không totalAmount,
+                // VAT và tổng chi tiêu khách hàng đều tính sai.
+                basePrice = itemReq.getFinalUnitPrice();
+
+            } else if (isAppOrder) {
                 PosAppMenu appMenu = appMenuRepo.findByProductAndPlatform(product, platformFinal)
                         .orElseThrow(() -> new RuntimeException(
                                 "App menu chưa thiết lập cho " + product.getName() + " trên " + platformFinal));
@@ -852,17 +1104,37 @@ public class PosService {
                 basePrice = product.getBasePrice();
             }
 
-            // ── Tính addon RAW (trước rate) ──────────────────────
+            // ── Tính addon RAW (trước giảm giá & rate) ───────────
+            // Giá addon do SERVER quyết định, THEO KÊNH BÁN:
+            //   đơn app  → giá app của kênh đó ?? giá tại quán ?? giá mặc định NL
+            //   đơn quán → giá tại quán ?? giá mặc định NL
+            // Giá trên app thường cao hơn giá tại quán nên không dùng chung.
+            // Không tin addonPriceSnapshot từ client (chỉ dùng làm fallback khi
+            // không tra được cấu hình, để tương thích dữ liệu cũ).
             BigDecimal addonRaw = BigDecimal.ZERO;
+            Map<String, BigDecimal> addonPrices = new HashMap<>();
             if (itemReq.getVariantSelections() != null) {
                 for (var sel : itemReq.getVariantSelections()) {
                     if (!Boolean.TRUE.equals(sel.getIsAddonGroup())) continue;
-                    for (var s : sel.getSelectedIngredients()) {
-                        if (s.getAddonPriceSnapshot() != null) {
-                            addonRaw = addonRaw.add(
-                                    s.getAddonPriceSnapshot()
-                                            .multiply(BigDecimal.valueOf(s.getSelectedCount())));
+
+                    PosVariant addonVariant = variantRepo.findById(sel.getVariantId()).orElse(null);
+                    Map<Long, PosVariantIngredient> viMap = new HashMap<>();
+                    if (addonVariant != null) {
+                        for (PosVariantIngredient vi : variantIngredientRepo.findByVariant(addonVariant)) {
+                            viMap.put(vi.getIngredient().getId(), vi);
                         }
+                    }
+
+                    for (var s : sel.getSelectedIngredients()) {
+                        PosVariantIngredient vi = viMap.get(s.getIngredientId());
+                        BigDecimal unitAddonPrice = vi != null
+                                ? vi.resolveAddonPrice(platformFinal)
+                                : (s.getAddonPriceSnapshot() != null
+                                ? s.getAddonPriceSnapshot() : BigDecimal.ZERO);
+
+                        addonPrices.put(sel.getVariantId() + ":" + s.getIngredientId(), unitAddonPrice);
+                        addonRaw = addonRaw.add(
+                                unitAddonPrice.multiply(BigDecimal.valueOf(s.getSelectedCount())));
                     }
                 }
             }
@@ -952,7 +1224,10 @@ public class PosService {
                     vatPct, vatAmount,
                     addonRawTotal, addonRawTotal,
                     itemReq.getVariantSelections(), itemReq.getNote(), categoryName,
-                    itemReq.getFinalUnitPrice()  // ← THÊM
+                    itemReq.getFinalUnitPrice(),  // ← THÊM
+                    looseInfo != null,
+                    looseInfo,                     // ← Ý 2
+                    addonPrices, BigDecimal.ONE
             ));
         }
 
@@ -984,7 +1259,16 @@ public class PosService {
             BigDecimal totalBaseOnly = calcs.stream()
                     .map(c -> c.basePrice().multiply(BigDecimal.valueOf(c.quantity())))
                     .reduce(BigDecimal.ZERO, BigDecimal::add);
-            BigDecimal discountForBase = appDiscountAmount.min(totalBaseOnly);
+            BigDecimal totalAddonOnly = calcs.stream()
+                    .map(CalcItem::addonRaw)
+                    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+            // Giảm giá app ưu tiên trừ vào món chính; phần vượt quá tổng tiền món
+            // chính mới phân bổ tiếp sang addon (trước đây phần dư bị bỏ rơi →
+            // tổng các dòng không khớp finalAmount).
+            BigDecimal discountForBase  = appDiscountAmount.min(totalBaseOnly);
+            BigDecimal discountForAddon = appDiscountAmount.subtract(discountForBase)
+                    .min(totalAddonOnly).max(BigDecimal.ZERO);
 
             List<CalcItem> rebuiltCalcs = new ArrayList<>();
             for (CalcItem calc : calcs) {
@@ -1005,7 +1289,24 @@ public class PosService {
                         .multiply(BigDecimal.ONE.subtract(platformRate))
                         .setScale(0, RoundingMode.CEILING);  // ← CEILING thay vì HALF_UP
 
+                // ── ADDON: áp dụng ĐÚNG logic của món chính ──────────────────
+                //   net = (giá addon - phần giảm giá app phân bổ) × (1 - phí sàn)
+                BigDecimal addonDiscount = totalAddonOnly.compareTo(BigDecimal.ZERO) > 0
+                        ? discountForAddon
+                        .multiply(calc.addonRaw())
+                        .divide(totalAddonOnly, 10, RoundingMode.HALF_UP)
+                        : BigDecimal.ZERO;
+
+                // hệ số áp cho từng đơn giá addon (giảm giá + phí sàn)
+                BigDecimal addonNetFactor = calc.addonRaw().compareTo(BigDecimal.ZERO) > 0
+                        ? BigDecimal.ONE
+                        .subtract(addonDiscount.divide(calc.addonRaw(), 10, RoundingMode.HALF_UP))
+                        .multiply(BigDecimal.ONE.subtract(platformRate))
+                        : BigDecimal.ONE.subtract(platformRate);
+
                 BigDecimal newAddonNet = calc.addonRaw()
+                        .subtract(addonDiscount)
+                        .max(BigDecimal.ZERO)
                         .multiply(BigDecimal.ONE.subtract(platformRate))
                         .setScale(2, RoundingMode.HALF_UP);
 
@@ -1018,7 +1319,9 @@ public class PosService {
                         newFinalUnitPrice, calc.quantity(), newSubtotal,
                         calc.vatPercent(), calc.vatAmount(), newAddonNet, calc.addonRaw(),
                         calc.variantSelections(), calc.note(), calc.categoryName(),
-                        calc.requestedFinalUnitPrice()  // ← THÊM
+                        calc.requestedFinalUnitPrice(),  // ← THÊM
+                        calc.looseSale(), calc.looseInfo(),
+                        calc.addonPrices(), addonNetFactor
                 ));
             }
             calcs = rebuiltCalcs;
@@ -1037,10 +1340,11 @@ public class PosService {
                 } else {
                     // Không có định lượng: tính từ basePrice × (1 - discount%)
                     // → đây chính là giá lẻ (đã làm tròn nghìn)
-                    finalUnitPrice = roundToThousand(
-                            calc.product().getBasePrice().multiply(BigDecimal.ONE.subtract(
+                    finalUnitPrice = calc.product().getBasePrice()
+                            .multiply(BigDecimal.ONE.subtract(
                                     BigDecimal.valueOf(calc.discountPercent())
-                                            .divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP))));
+                                            .divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP)))
+                            .setScale(0, RoundingMode.HALF_UP);
                 }
 
                 BigDecimal newSubtotal = finalUnitPrice
@@ -1053,7 +1357,8 @@ public class PosService {
                         finalUnitPrice, calc.quantity(), newSubtotal,
                         calc.vatPercent(), calc.vatAmount(), calc.addonRaw(), calc.addonRaw(),
                         calc.variantSelections(), calc.note(), calc.categoryName(),
-                        calc.requestedFinalUnitPrice()));
+                        calc.requestedFinalUnitPrice(), calc.looseSale(), calc.looseInfo(),
+                        calc.addonPrices(), BigDecimal.ONE));   // offline: không trừ phí sàn
             }
             calcs = rebuiltOffline;
         }
@@ -1072,7 +1377,11 @@ public class PosService {
                         && customerDiscount.getSelectedOption().isItemType()
                         && req.getDiscountItemProductId() != null) {
 
+                    // Ý 2: hàng xé lẻ KHÔNG được chọn làm "món tặng/giảm" —
+                    // nếu không, đơn có cả túi lẫn xé lẻ cùng productId sẽ
+                    // bắt nhầm dòng xé lẻ (giá tay) thay vì dòng nguyên túi.
                     selectedItemPrice = calcs.stream()
+                            .filter(c -> !c.looseSale())
                             .filter(c -> c.product().getId().equals(req.getDiscountItemProductId()))
                             .findFirst()
                             .map(c -> c.finalUnitPrice().multiply(BigDecimal.valueOf(c.quantity())))
@@ -1188,7 +1497,9 @@ public class PosService {
                     calc.vatPercent(), newVatAmount,
                     calc.addonAmount(), calc.addonRaw(),
                     calc.variantSelections(), calc.note(), calc.categoryName(),
-                    calc.requestedFinalUnitPrice()  // ← THÊM
+                    calc.requestedFinalUnitPrice(),  // ← THÊM
+                    calc.looseSale(), calc.looseInfo(),
+                    calc.addonPrices(), calc.addonNetFactor()
             ));
         }
         calcs = rebuiltWithVat;
@@ -1251,9 +1562,12 @@ public class PosService {
             appOrderCodeFull = prefix + req.getAppOrderCode().trim();
         }
 
+        String invoiceToken = UUID.randomUUID().toString().replaceAll("-", "");
+
         PosOrder order = PosOrder.builder()
                 .orderCode(orderCode)
                 .shift(shift)
+                .invoiceToken(invoiceToken)
                 .createdBy(user)
                 .store(store)
                 .orderSource(req.getOrderSource())
@@ -1316,13 +1630,26 @@ public class PosService {
         }
 
         // Cập nhật tổng chi tiêu khách hàng
-        if (!isAppOrder && req.getCustomerPhone() != null
-                && !req.getCustomerPhone().isBlank()) {
+        if (isAppOrder) {
+            log.debug("[Accumulation] Bỏ qua đơn App #{} — không tích lũy", order.getId());
+        } else if (req.getCustomerPhone() == null || req.getCustomerPhone().isBlank()) {
+            log.debug("[Accumulation] Đơn #{} không gắn SĐT khách → không tích lũy",
+                    order.getId());
+        } else {
             String normalizedPhone = PosCustomerService
                     .normalizePhone(req.getCustomerPhone());
             PosCustomer customer = posCustomerRepo
                     .findByPhone(normalizedPhone).orElse(null);
-            if (customer != null) {
+            if (customer == null) {
+                // Trước đây nhánh này im lặng: đơn tạo thành công nhưng khách
+                // không được tích điểm mà không có bất kỳ dấu vết nào.
+                log.warn("[Accumulation] KHÔNG tìm thấy khách theo SĐT '{}' "
+                                + "(raw='{}') — đơn #{} sẽ KHÔNG được tích lũy.",
+                        normalizedPhone, req.getCustomerPhone(), order.getId());
+            } else {
+                log.info("[Accumulation] Ghi nhận chi tiêu: customerId={} storeId={} "
+                                + "orderId={} spend={}",
+                        customer.getId(), storeId, order.getId(), totalAmount);
                 accumulationService.recordSpend(
                         customer.getId(), storeId, order.getId(), totalAmount); // ← totalAmount thay vì finalAmount
             }
@@ -1333,7 +1660,14 @@ public class PosService {
             BigDecimal defaultPrice;
             BigDecimal basePrice = calc.basePrice();
             int discountPercent = 0;
-            if (isAppOrder) {
+            if (calc.looseSale()) {
+                // Ý 2: hàng xé lẻ — giá tay là cả basePrice lẫn defaultPrice,
+                // để bill/lịch sử không hiển thị "giảm giá" ảo so với giá niêm yết.
+                basePrice    = calc.basePrice();
+                defaultPrice = calc.basePrice();
+                discountPercent = 0;
+
+            } else if (isAppOrder) {
                 discountPercent = calc.discountPercent();
                 defaultPrice = appMenuRepo
                         .findByProductAndPlatform(calc.product(), platformFinal)
@@ -1344,10 +1678,11 @@ public class PosService {
                 // basePrice = giá sau giảm % (làm tròn lên nghìn cho offline)
                 if (calc.discountPercent() > 0) {
                     BigDecimal discount = BigDecimal.valueOf(calc.discountPercent())
-                            .divide(BigDecimal.valueOf(100));
+                            .divide(BigDecimal.valueOf(100), 4, RoundingMode.HALF_UP);
 
                     basePrice = calc.product.getBasePrice()
-                            .multiply(BigDecimal.ONE.subtract(discount));
+                            .multiply(BigDecimal.ONE.subtract(discount))
+                            .setScale(2, RoundingMode.HALF_UP);  // giữ decimal, không làm tròn nghìn
                     discountPercent = calc.discountPercent();
                 } else {
                     basePrice = calc.product.getBasePrice();
@@ -1370,6 +1705,12 @@ public class PosService {
                     .vatAmount(calc.vatAmount())
                     .addonAmount(calc.addonAmount())
                     .note(calc.note())
+                    // ── Ý 2: snapshot thông tin xé lẻ ──
+                    .looseSale(calc.looseSale())
+                    .looseQuantity(calc.looseInfo() != null ? calc.looseInfo().quantity() : null)
+                    .looseUnit(calc.looseInfo() != null ? calc.looseInfo().looseUnit() : null)
+                    .looseMainUnit(calc.looseInfo() != null ? calc.looseInfo().mainUnit() : null)
+                    .looseIngredientId(calc.looseInfo() != null ? calc.looseInfo().ingredientId() : null)
                     .build();
 
             orderItem = orderItemRepo.save(orderItem);
@@ -1390,9 +1731,39 @@ public class PosService {
                         List<BigDecimal> unitWeights = s.getUnitWeights();
                         BigDecimal quantityUsed = (unitWeights != null && !unitWeights.isEmpty())
                                 ? unitWeights.stream().reduce(BigDecimal.ZERO, BigDecimal::add)
-                                : BigDecimal.valueOf(s.getSelectedCount());
+                                : BigDecimal.valueOf(s.getSelectedCount()).multiply(defaultDeductPerUnit);
 
-                        quantityUsed = quantityUsed.multiply(BigDecimal.valueOf(calc.quantity()));
+                        BigDecimal finalQuantityUsed = (unitWeights != null && !unitWeights.isEmpty())
+                                ? quantityUsed                                                    // unitWeights đã là tổng thực tế (số miếng khi xé lẻ)
+                                : quantityUsed.multiply(BigDecimal.valueOf(calc.quantity()));     // fallback: nhân qty
+
+                        // ── Ý 2: đúng nguyên liệu được xé lẻ → quantityUsed LUÔN là
+                        // số lượng xé lẻ đã verify (đơn vị nhỏ nhất), kể cả khi client
+                        // quên gửi unitWeights. Báo cáo kho dựa vào con số này.
+                        if (calc.looseSale() && calc.looseInfo() != null
+                                && ing.getId().equals(calc.looseInfo().ingredientId())) {
+                            finalQuantityUsed = calc.looseInfo().quantity();
+                            if (unitWeights == null || unitWeights.isEmpty()) {
+                                unitWeights = List.of(calc.looseInfo().quantity());
+                            }
+                        }
+
+                        // ── Giá addon: gross (khách trả) + net (thực nhận) ──
+                        // Chỉ nhóm addon mới có giá; nhóm variant thường = null
+                        // để không phá logic đọc addon ở client/report.
+                        BigDecimal addonGross = null;
+                        BigDecimal addonNet   = null;
+                        if (Boolean.TRUE.equals(variant.getIsAddonGroup())) {
+                            addonGross = calc.addonPrices()
+                                    .get(variant.getId() + ":" + ing.getId());
+                            if (addonGross == null) {
+                                addonGross = s.getAddonPriceSnapshot() != null
+                                        ? s.getAddonPriceSnapshot() : BigDecimal.ZERO;
+                            }
+                            addonNet = addonGross
+                                    .multiply(calc.addonNetFactor())
+                                    .setScale(2, RoundingMode.HALF_UP);
+                        }
 
                         ingList.add(PosOrderItemIngredient.builder()
                                 .orderItem(orderItem)
@@ -1400,12 +1771,13 @@ public class PosService {
                                 .ingredientName(ing.getName())
                                 .ingredientImageUrl(ing.getImageUrl())
                                 .ingredientUnit(ing.getUnit())
-                                .selectedCount(s.getSelectedCount())
+                                .selectedCount(s.getSelectedCount() * calc.quantity())  // ← FIX
                                 .defaultDeductPerUnit(defaultDeductPerUnit)
                                 .unitWeights(unitWeights)
-                                .quantityUsed(quantityUsed)
+                                .quantityUsed(finalQuantityUsed)
                                 .variantId(variant.getId())
-                                .addonPriceSnapshot(s.getAddonPriceSnapshot())
+                                .addonPriceSnapshot(addonGross)
+                                .addonPriceNet(addonNet)
                                 .variantGroupName(variant.getGroupName())
                                 .build());
                     }
@@ -1498,17 +1870,6 @@ public class PosService {
         return report;
     }
 
-    public List<StockImportResponse> getStockImportsByShift(Long shiftId) {
-        PosShift shift = shiftRepo.findById(shiftId)
-                .orElseThrow(() -> new RuntimeException("Shift not found: " + shiftId));
-        return stockImportRepo.findByShift(shift).stream()
-                .map(this::toStockImportResponse).collect(Collectors.toList());
-    }
-
-    // ════════════════════════════════════════
-    // HELPERS - MAPPERS (giữ nguyên từ version cũ)
-    // ════════════════════════════════════════
-
     private String generateOrderCode() {
         String date   = LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"));
         String prefix = "POS-" + date + "-";
@@ -1545,6 +1906,12 @@ public class PosService {
                 .ingredientType(i.getIngredientType() != null ? i.getIngredientType() : IngredientType.MAIN)
                 .addonPrice(i.getAddonPrice() != null ? i.getAddonPrice() : BigDecimal.ZERO)
                 .unit(i.getUnit() != null ? i.getUnit() : "Cái")   // ← THÊM
+                .hotSaleEnabled(Boolean.TRUE.equals(i.getHotSaleEnabled()))
+                .hotSalesPerBag(i.getHotSalesPerBag())
+                .hotQtyPerSale(i.getHotQtyPerSale())
+                .hotSaleUnit(i.getHotSaleUnit())
+                .looseSaleEnabled(Boolean.TRUE.equals(i.getLooseSaleEnabled()))
+                .looseUnit(i.getLooseUnit())
                 .build();
     }
 
@@ -1591,8 +1958,18 @@ public class PosService {
                                                 .maxSelectableCount(vi.getMaxSelectableCount())
                                                 .subGroupTag(vi.getSubGroupTag()).subGroupMaxSelect(vi.getSubGroupMaxSelect())
                                                 .displayOrder(vi.getDisplayOrder())
-                                                .addonPrice(vi.getIngredient().getAddonPrice() != null
-                                                        ? vi.getIngredient().getAddonPrice() : BigDecimal.ZERO).build())
+                                                // addonPrice = giá THỰC TẾ áp dụng (override nếu có)
+                                                .addonPrice(vi.resolveAddonPrice())
+                                                .addonPriceOverride(vi.getAddonPriceOverride())
+                                                .addonPriceShopee(vi.getAddonPriceShopee())
+                                                .addonPriceGrab(vi.getAddonPriceGrab())
+                                                .defaultAddonPrice(vi.defaultAddonPrice())
+                                                .unitPerPack(vi.getIngredient().getUnitPerPack())
+                                                .looseSaleEnabled(Boolean.TRUE.equals(vi.getIngredient().getLooseSaleEnabled()))
+                                                .hotSaleEnabled(Boolean.TRUE.equals(vi.getIngredient().getHotSaleEnabled()))
+                                                .unit(vi.getIngredient().getUnit())
+                                                .looseUnit(vi.getIngredient().getLooseUnit())
+                                                .build())
                                 .collect(Collectors.toList()))
                         .build()).collect(Collectors.toList());
         List<PosAppMenuResponse> appMenus = p.getAppMenus() == null ? Collections.emptyList()
@@ -1640,16 +2017,81 @@ public class PosService {
                 .forEach(row -> importMap.put((Long) row[0], ((Number) row[1]).intValue()));
 
         // ══════════════════════════════════════════════════════════
-        // Tính tổng quantityUsed và chỉ làm tròn 2 chữ số thập phân
+        // Tổng quantityUsed. Ý 1: usage bán món nóng KHÔNG cộng vào
+        // soldQty của dòng chính — tách riêng để hiển thị DÒNG PHỤ
+        // (số lần + số túi đã xé) giống hệt sheet Nguyên Liệu.
         // ══════════════════════════════════════════════════════════
+        Map<Long, PosIngredient> ingCfg = ingredientRepo.findByStoreId(s.getStoreId()).stream()
+                .collect(Collectors.toMap(PosIngredient::getId, x -> x, (a, b) -> a));
+        Map<Long, Integer> hotPortions = new HashMap<>();
         Map<Long, BigDecimal> soldMapDecimal = new HashMap<>();
+        // Ý 2 — số lượng đã XÉ BÁN LẺ (theo đơn vị nhỏ nhất, vd "Miếng")
+        Map<Long, BigDecimal> loosePiecesMap = new HashMap<>();
 
-        orderItemIngredientRepo.findByShiftId(s.getId())
-                .forEach(ing -> soldMapDecimal.merge(
-                        ing.getIngredientId(),
-                        ing.getQuantityUsed(),
-                        BigDecimal::add
-                ));
+        for (PosOrderItemIngredient ing : orderItemIngredientRepo.findByShiftIdFetchItem(s.getId())) {
+            PosIngredient cfg = ingCfg.get(ing.getIngredientId());
+            BigDecimal ded = ing.getDefaultDeductPerUnit();
+            boolean isHotUsage = cfg != null
+                    && Boolean.TRUE.equals(cfg.getHotSaleEnabled())
+                    && cfg.getHotQtyPerSale() != null
+                    && ded != null
+                    && ded.compareTo(cfg.getHotQtyPerSale()) == 0;
+            if (isHotUsage) {
+                hotPortions.merge(ing.getIngredientId(),
+                        ing.getSelectedCount() != null ? ing.getSelectedCount() : 0, Integer::sum);
+                continue;
+            }
+
+            // Ý 2 — usage bán xé lẻ: order item có cờ looseSale + NL bật looseSaleEnabled.
+            // quantityUsed là SỐ MIẾNG (đơn vị nhỏ nhất) → tách sang DÒNG PHỤ,
+            // dòng chính chỉ ghi nhận phần bán nguyên túi.
+            PosOrderItem parentItem = ing.getOrderItem();
+            boolean isLooseUsage = cfg != null
+                    && Boolean.TRUE.equals(cfg.getLooseSaleEnabled())
+                    && parentItem != null
+                    && Boolean.TRUE.equals(parentItem.getLooseSale());
+            if (isLooseUsage) {
+                loosePiecesMap.merge(ing.getIngredientId(),
+                        ing.getQuantityUsed() != null ? ing.getQuantityUsed() : BigDecimal.ZERO,
+                        BigDecimal::add);
+                continue;
+            }
+
+            soldMapDecimal.merge(ing.getIngredientId(),
+                    ing.getQuantityUsed() != null ? ing.getQuantityUsed() : BigDecimal.ZERO,
+                    BigDecimal::add);
+        }
+
+        // ── Quy đổi số miếng xé lẻ → số túi đã xé + số miếng còn dư ──
+        // packs = ceil(pieces / unitPerPack); leftover = packs × unitPerPack − pieces
+        Map<Long, BigDecimal[]> looseInfo = new HashMap<>();  // [pieces, packs, leftover]
+        loosePiecesMap.forEach((ingredientId, pieces) -> {
+            PosIngredient cfg = ingCfg.get(ingredientId);
+            if (cfg == null || pieces == null || pieces.signum() <= 0) return;
+            BigDecimal perPack = (cfg.getUnitPerPack() != null
+                    && cfg.getUnitPerPack().signum() > 0)
+                    ? cfg.getUnitPerPack() : BigDecimal.ONE;
+            BigDecimal packs = pieces.divide(perPack, 0, RoundingMode.CEILING);
+            BigDecimal leftover = packs.multiply(perPack).subtract(pieces).max(BigDecimal.ZERO);
+            looseInfo.put(ingredientId, new BigDecimal[]{
+                    pieces.stripTrailingZeros(), packs, leftover.stripTrailingZeros()});
+        });
+
+        // KHÔNG cộng món nóng vào soldQty nữa — tách riêng cho dòng phụ
+        Map<Long, int[]>      hotInfo   = new HashMap<>();  // [portions, bags, leftover]
+        Map<Long, BigDecimal> hotQtyMap = new HashMap<>();
+
+        hotPortions.forEach((ingredientId, portions) -> {
+            PosIngredient cfg = ingCfg.get(ingredientId);
+            if (cfg == null || portions <= 0) return;
+            int perBag = (cfg.getHotSalesPerBag() != null && cfg.getHotSalesPerBag() > 0)
+                    ? cfg.getHotSalesPerBag() : 1;
+            int bags = (portions + perBag - 1) / perBag;   // ceil
+            hotInfo.put(ingredientId, new int[]{portions, bags, bags * perBag - portions});
+            if (cfg.getHotQtyPerSale() != null)
+                hotQtyMap.put(ingredientId,
+                        cfg.getHotQtyPerSale().multiply(BigDecimal.valueOf(portions)));
+        });
 
         // Làm tròn 2 chữ số thập phân SAU KHI đã cộng xong
         Map<Long, BigDecimal> soldMap = new HashMap<>();
@@ -1671,7 +2113,28 @@ public class PosService {
                         .totalUnits(i.getPackQuantity() * i.getPackQuantity()
                                 + i.getUnitQuantity().doubleValue())
                         .importPackQty(importMap.getOrDefault(i.getIngredientId(), 0))
-                        .soldQty(soldMap.getOrDefault(i.getIngredientId(), BigDecimal.ZERO))  // BigDecimal
+                        .soldQty(soldMap.getOrDefault(i.getIngredientId(), BigDecimal.ZERO))
+                        // ── Thông tin dòng phụ "món nóng" ───────────────
+                        .hotPortions(hotInfo.containsKey(i.getIngredientId())
+                                ? hotInfo.get(i.getIngredientId())[0] : 0)
+                        .hotBags(hotInfo.containsKey(i.getIngredientId())
+                                ? hotInfo.get(i.getIngredientId())[1] : 0)
+                        .hotLeftover(hotInfo.containsKey(i.getIngredientId())
+                                ? hotInfo.get(i.getIngredientId())[2] : 0)
+                        .hotQtyTotal(hotQtyMap.getOrDefault(i.getIngredientId(), BigDecimal.ZERO))
+                        .hotSaleUnit(ingCfg.containsKey(i.getIngredientId())
+                                ? ingCfg.get(i.getIngredientId()).getHotSaleUnit() : null)
+                        // ── Thông tin dòng phụ "xé bán lẻ" (Ý 2) ────────
+                        .loosePieces(looseInfo.containsKey(i.getIngredientId())
+                                ? looseInfo.get(i.getIngredientId())[0] : BigDecimal.ZERO)
+                        .loosePacks(looseInfo.containsKey(i.getIngredientId())
+                                ? looseInfo.get(i.getIngredientId())[1].intValue() : 0)
+                        .looseLeftover(looseInfo.containsKey(i.getIngredientId())
+                                ? looseInfo.get(i.getIngredientId())[2] : BigDecimal.ZERO)
+                        .looseUnit(ingCfg.containsKey(i.getIngredientId())
+                                ? ingCfg.get(i.getIngredientId()).getLooseUnit() : null)
+                        .packUnit(ingCfg.containsKey(i.getIngredientId())
+                                ? ingCfg.get(i.getIngredientId()).getUnit() : null)
                         .build())
                 .collect(Collectors.toList());
 
@@ -1817,6 +2280,9 @@ public class PosService {
                                             .unitWeights(si.getUnitWeights())
                                             .quantityUsed(si.getQuantityUsed())
                                             .addonPrice(si.getAddonPriceSnapshot())  // ← THÊM
+                                            .addonPriceNet(si.getAddonPriceNet() != null
+                                                    ? si.getAddonPriceNet()
+                                                    : si.getAddonPriceSnapshot())
                                             .build())
                             .collect(Collectors.toList()))
                     .build();
@@ -1856,6 +2322,12 @@ public class PosService {
                         .quantity(item.getQuantity())
                         .subtotal(item.getSubtotal())
                         .note(item.getNote())
+                        // ── Ý 2: bán xé lẻ ──
+                        .looseSale(Boolean.TRUE.equals(item.getLooseSale()))
+                        .looseQuantity(item.getLooseQuantity())
+                        .looseUnit(item.getLooseUnit())
+                        .looseMainUnit(item.getLooseMainUnit())
+                        .looseIngredientId(item.getLooseIngredientId())
                         .variantSelections(groupIngredientsByVariant(
                                 orderItemIngredientRepo.findByOrderItem(item)))
                         .build())
@@ -1908,6 +2380,7 @@ public class PosService {
                 .staffName(o.getShift().getStaffName())
                 .orderSource(o.getOrderSource())
                 .status(o.getStatus())
+                .invoiceToken(o.getInvoiceToken())
                 .appOrderCode(o.getAppOrderCode())
                 .totalAmount(o.getTotalAmount() != null ? o.getTotalAmount() : BigDecimal.ZERO)
                 .finalAmount(finalAmount)

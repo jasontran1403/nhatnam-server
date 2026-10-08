@@ -101,6 +101,153 @@ public class DashboardService {
     }
 
     // ══════════════════════════════════════════════════════════
+    // POS — ROLLING PERFORMANCE (cửa sổ trượt 7 / 28 / 30 ngày)
+    // Rolling tại ngày D = tổng dữ liệu [D-(N-1) .. D]
+    // Chỉ tính đơn COMPLETED. filterType: ALL | TAKE_AWAY | DINE_IN |
+    //   SHOPEE_FOOD | GRAB_FOOD (CAT_* bị bỏ qua = ALL, không lọc danh mục).
+    // ══════════════════════════════════════════════════════════
+    public PosDashboardDto.RollingPerformance getPosRolling(
+            int window, Long anchorTs, Long storeId, String filterType) {
+
+        if (window != 7 && window != 28 && window != 30) window = 7;
+        final int N = window;
+
+        long anchorMs = anchorTs != null ? anchorTs : System.currentTimeMillis();
+        LocalDate anchorDay = Instant.ofEpochMilli(anchorMs).atZone(VN_ZONE).toLocalDate();
+
+        // Cần dữ liệu thô 2N ngày: đủ để mỗi điểm rolling (và kỳ liền trước) có N ngày phía sau
+        LocalDate rawFromDay = anchorDay.minusDays(2L * N - 1);
+        long rawFrom = rawFromDay.atStartOfDay(VN_ZONE).toInstant().toEpochMilli();
+        long rawTo   = anchorDay.plusDays(1).atStartOfDay(VN_ZONE).toInstant().toEpochMilli() - 1;
+
+        // Lọc theo nguồn (chỉ nhận OrderSource; ALL/CAT_*/null → không lọc)
+        OrderSource src = null;
+        if (filterType != null && !filterType.equals("ALL")) {
+            try { src = OrderSource.valueOf(filterType); } catch (Exception ignore) { src = null; }
+        }
+        String sourceCond = src != null ? " AND po.orderSource = :src " : "";
+
+        // (1) Doanh thu + số đơn theo từng đơn
+        var q = em.createQuery(
+                        "SELECT po.createdAt, po.finalAmount FROM PosOrder po " +
+                                "WHERE po.status = :status " +
+                                "  AND po.createdAt >= :from AND po.createdAt <= :to " +
+                                "  AND (:storeId IS NULL OR po.store.id = :storeId) " +
+                                sourceCond, Object[].class)
+                .setParameter("status", PosOrderStatus.COMPLETED)
+                .setParameter("from", rawFrom).setParameter("to", rawTo)
+                .setParameter("storeId", storeId);
+        if (src != null) q.setParameter("src", src);
+
+        // (2) Số DÒNG sản phẩm theo đơn = COUNT(order_item) — KHÔNG nhân số lượng
+        var pq = em.createQuery(
+                        "SELECT po.createdAt, COUNT(poi.id) " +
+                                "FROM PosOrderItem poi JOIN poi.order po " +
+                                "WHERE po.status = :status " +
+                                "  AND po.createdAt >= :from AND po.createdAt <= :to " +
+                                "  AND (:storeId IS NULL OR po.store.id = :storeId) " +
+                                sourceCond +
+                                "GROUP BY po.createdAt", Object[].class)
+                .setParameter("status", PosOrderStatus.COMPLETED)
+                .setParameter("from", rawFrom).setParameter("to", rawTo)
+                .setParameter("storeId", storeId);
+        if (src != null) pq.setParameter("src", src);
+
+        // Gom theo ngày (VN)
+        Map<LocalDate, BigDecimal> dayRev      = new HashMap<>();
+        Map<LocalDate, Long>       dayOrders   = new HashMap<>();
+        Map<LocalDate, Long>       dayProducts = new HashMap<>();
+
+        for (Object[] r : q.getResultList()) {
+            long       ts  = (Long) r[0];
+            BigDecimal amt = r[1] != null ? (BigDecimal) r[1] : BigDecimal.ZERO;
+            LocalDate  day = Instant.ofEpochMilli(ts).atZone(VN_ZONE).toLocalDate();
+            dayRev.merge(day, amt, BigDecimal::add);
+            dayOrders.merge(day, 1L, Long::sum);
+        }
+        for (Object[] r : pq.getResultList()) {
+            long ts    = (Long) r[0];
+            long count = r[1] != null ? ((Number) r[1]).longValue() : 0L;
+            LocalDate day = Instant.ofEpochMilli(ts).atZone(VN_ZONE).toLocalDate();
+            dayProducts.merge(day, count, Long::sum);
+        }
+
+        // Chuỗi rolling: ngày kết thúc từ (anchorDay-(N-1)) .. anchorDay → N điểm
+        List<PosDashboardDto.RollingPoint> series = new ArrayList<>();
+        DateTimeFormatter fmt = DateTimeFormatter.ISO_LOCAL_DATE;
+        for (int i = N - 1; i >= 0; i--) {
+            LocalDate endDay = anchorDay.minusDays(i);
+            PosDashboardDto.RollingMetrics m =
+                    aggregateRollingWindow(endDay, N, dayRev, dayOrders, dayProducts);
+            series.add(PosDashboardDto.RollingPoint.builder()
+                    .date(endDay.format(fmt))
+                    .ts(endDay.atStartOfDay(VN_ZONE).toInstant().toEpochMilli())
+                    .revenue(m.getRevenue()).orders(m.getOrders())
+                    .products(m.getProducts()).aov(m.getAov())
+                    .build());
+        }
+
+        PosDashboardDto.RollingMetrics current  =
+                aggregateRollingWindow(anchorDay, N, dayRev, dayOrders, dayProducts);
+        PosDashboardDto.RollingMetrics previous =
+                aggregateRollingWindow(anchorDay.minusDays(N), N, dayRev, dayOrders, dayProducts);
+
+        PosDashboardDto.RollingDeltaPct delta = PosDashboardDto.RollingDeltaPct.builder()
+                .revenue(pctChange(current.getRevenue(), previous.getRevenue()))
+                .orders(pctChange(current.getOrders(), previous.getOrders()))
+                .products(pctChange(current.getProducts(), previous.getProducts()))
+                .aov(pctChange(current.getAov(), previous.getAov()))
+                .build();
+
+        return PosDashboardDto.RollingPerformance.builder()
+                .window(N).current(current).previous(previous)
+                .deltaPct(delta).series(series).build();
+    }
+
+    /** Tổng hợp 1 cửa sổ [endDay-(N-1) .. endDay].
+     *  Doanh thu / Số đơn / Sản phẩm = TỔNG trong window; AOV = TRUNG BÌNH AOV các ngày. */
+    private PosDashboardDto.RollingMetrics aggregateRollingWindow(
+            LocalDate endDay, int N,
+            Map<LocalDate, BigDecimal> dayRev,
+            Map<LocalDate, Long> dayOrders,
+            Map<LocalDate, Long> dayProducts) {
+
+        BigDecimal rev = BigDecimal.ZERO;
+        long orders = 0;
+        long products = 0;
+        BigDecimal aovSum = BigDecimal.ZERO;   // tổng AOV của TỪNG ngày trong window
+        for (int k = 0; k < N; k++) {
+            LocalDate  d    = endDay.minusDays(k);
+            BigDecimal dRev = dayRev.getOrDefault(d, BigDecimal.ZERO);
+            long       dOrd = dayOrders.getOrDefault(d, 0L);
+            rev = rev.add(dRev);
+            orders += dOrd;
+            products += dayProducts.getOrDefault(d, 0L);
+            // AOV theo NGÀY = doanh thu ngày / số đơn ngày (0 nếu ngày không có đơn)
+            if (dOrd > 0) {
+                aovSum = aovSum.add(
+                        dRev.divide(BigDecimal.valueOf(dOrd), 0, java.math.RoundingMode.HALF_UP));
+            }
+        }
+        // AOV = TRUNG BÌNH AOV các ngày = (Σ AOV mỗi ngày) / N  (chia đều cho N ngày).
+        BigDecimal aov = aovSum.divide(BigDecimal.valueOf(N), 0, java.math.RoundingMode.HALF_UP);
+        return PosDashboardDto.RollingMetrics.builder()
+                .revenue(rev).orders(orders).products(products).aov(aov)
+                .build();
+    }
+
+    private Double pctChange(BigDecimal cur, BigDecimal prev) {
+        if (prev == null || prev.signum() == 0) return null;
+        return cur.subtract(prev).multiply(BigDecimal.valueOf(100))
+                .divide(prev, 1, java.math.RoundingMode.HALF_UP).doubleValue();
+    }
+
+    private Double pctChange(long cur, long prev) {
+        if (prev == 0) return null;
+        return Math.round((cur - prev) * 1000.0 / prev) / 10.0;
+    }
+
+    // ══════════════════════════════════════════════════════════
     // RESTAURANT — ORDER SUMMARY
     // ══════════════════════════════════════════════════════════
 

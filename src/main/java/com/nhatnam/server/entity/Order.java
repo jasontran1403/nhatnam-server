@@ -115,6 +115,42 @@ public class Order {
     @Column(name = "updated_at", nullable = false)
     private Long updatedAt;
 
+    // ── QR nhập thông tin xuất hóa đơn (khách tự nhập qua link public) ──
+    @Column(name = "invoice_token", unique = true, length = 36)
+    private String invoiceToken;
+
+    /** Email nhận hóa đơn — có thể khác customerEmail */
+    @Column(name = "invoice_email", length = 200)
+    private String invoiceEmail;
+
+    /** Lần cuối thông tin xuất hóa đơn được nhập/cập nhật */
+    @Column(name = "invoice_submitted_at")
+    private Long invoiceSubmittedAt;
+
+    // ── Kết quả hóa đơn điện tử Viettel (đơn sỉ/lẻ) ──────────────────
+    // ddl-auto=update sẽ tự tạo các cột này.
+    @Column(name = "einvoice_no", length = 50)
+    private String eInvoiceNo;
+
+    @Column(name = "einvoice_issued_date")
+    private Long eInvoiceIssuedDate;
+
+    @Column(name = "einvoice_status", length = 20)
+    private String eInvoiceStatus;          // ISSUED | ERROR
+
+    @Column(name = "einvoice_transaction_id", length = 100)
+    private String eInvoiceTransactionId;   // dùng khi gửi CQT
+
+    @Column(name = "einvoice_pdf_url", length = 500)
+    private String eInvoicePdfUrl;
+
+    /** Mẫu số + ký hiệu thực tế đã phát hành — xem giải thích ở PosOrder */
+    @Column(name = "einvoice_template_code", length = 20)
+    private String eInvoiceTemplateCode;
+
+    @Column(name = "einvoice_series", length = 20)
+    private String eInvoiceSeries;
+
     @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
     private List<OrderItem> orderItems;
 }

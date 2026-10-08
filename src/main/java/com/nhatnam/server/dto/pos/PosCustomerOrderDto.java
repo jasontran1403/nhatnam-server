@@ -59,7 +59,8 @@ public class PosCustomerOrderDto {
     public record AddonDto(
             String ingredientName,
             int    selectedCount,
-            BigDecimal addonPriceSnapshot
+            BigDecimal addonPriceSnapshot,   // giá khách trả (gross)
+            BigDecimal addonPriceNet         // giá quán thực nhận (sau giảm giá app + phí sàn)
     ) {}
 
     public record PageResult(

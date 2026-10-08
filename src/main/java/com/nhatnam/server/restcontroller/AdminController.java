@@ -3,23 +3,29 @@ package com.nhatnam.server.restcontroller;
 import com.nhatnam.server.dto.DashboardDto;
 import com.nhatnam.server.dto.PosChartDto;
 import com.nhatnam.server.dto.PosDashboardDto;
+import com.nhatnam.server.dto.RevenueIntelligenceDto;
 import com.nhatnam.server.dto.pos.*;
 import com.nhatnam.server.dto.response.ApiResponse;
 import com.nhatnam.server.entity.User;
 import com.nhatnam.server.entity.pos.*;
 import com.nhatnam.server.enumtype.PosCustomerType;
 import com.nhatnam.server.enumtype.PosOrderStatus;
+import com.nhatnam.server.enumtype.Role;
 import com.nhatnam.server.enumtype.StatusCode;
 import com.nhatnam.server.repository.pos.*;
 import com.nhatnam.server.service.PosChartService;
 import com.nhatnam.server.service.PosCustomerService;
 import com.nhatnam.server.service.PosService;
+import com.nhatnam.server.service.RevenueIntelligenceService;
 import com.nhatnam.server.service.serviceimpl.DashboardService;
 import com.nhatnam.server.utils.PosOrderExportService;
 import com.nhatnam.server.utils.TelegramService;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.log4j.Log4j2;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageRequest;
+import org.springframework.data.domain.Pageable;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
@@ -37,7 +43,7 @@ import java.util.stream.Collectors;
 @Log4j2
 @RequestMapping("/api/admin")
 public class AdminController {
-
+    private final RevenueIntelligenceService revenueIntelligenceService;
     private final DashboardService dashboardService;
     private final PosUserStoreRepository posUserStoreRepository;
     private final PosCustomerRepository posCustomerRepo;
@@ -45,11 +51,44 @@ public class AdminController {
     private final PosStoreRepository        posStoreRepository;
     private final PosService posService;
     private final PosShiftRepository  posShiftRepository;
+    private final TelegramService telegramService;
 
     private static final ZoneId VN_ZONE = ZoneId.of("Asia/Ho_Chi_Minh");
 
+    @GetMapping("/dashboard/pos/revenue-intelligence")
+    public ResponseEntity<ApiResponse<RevenueIntelligenceDto.Response>> getRevenueIntelligence(
+            @RequestParam long fromTs,
+            @RequestParam long toTs,
+            @RequestParam(defaultValue = "7")    int    shortWindow,
+            @RequestParam(defaultValue = "28")   int    longWindow,
+            @RequestParam(defaultValue = "0.5")  double alpha,
+            @RequestParam(defaultValue = "0.10") double normalThreshold,
+            @RequestParam(defaultValue = "0.20") double alertThreshold,
+            Authentication auth
+    ) {
+        try {
+            Long storeId = extractStoreId(extractUserId(auth));
+
+            RevenueIntelligenceDto.Config config = RevenueIntelligenceDto.Config.builder()
+                    .shortWindow(shortWindow)
+                    .longWindow(longWindow)
+                    .alpha(alpha)
+                    .normalThreshold(normalThreshold)
+                    .alertThreshold(alertThreshold)
+                    .build();
+
+            RevenueIntelligenceDto.Response data =
+                    revenueIntelligenceService.compute(storeId, fromTs, toTs, config);
+
+            return ResponseEntity.ok(ApiResponse.success(data, "OK"));
+        } catch (Exception e) {
+            log.error("[RI] getRevenueIntelligence error", e);
+            return ResponseEntity.ok(ApiResponse.error(500, e.getMessage()));
+        }
+    }
+
     @GetMapping("/dashboard/pos/export")
-    public ResponseEntity<byte[]> exportPosOrders(
+    public ResponseEntity<ApiResponse<String>> exportPosOrders(
             @RequestParam(defaultValue = "30DAYS") String period,
             @RequestParam(required = false) Long fromTs,
             @RequestParam(required = false) Long toTs,
@@ -59,25 +98,42 @@ public class AdminController {
             String storeName = posStoreRepository.findById(storeId)
                     .map(PosStore::getName).orElse("Store");
             final long[] range = resolveTimeRange(period, fromTs, toTs);
+            final String finalStoreName = storeName;
+            final Long   finalStoreId   = storeId;
 
-            // ← Đồng bộ, trả file trực tiếp về client
-            byte[] excel = posOrderExportService.exportForStore(
-                    storeId, storeName, range[0], range[1]);
+            CompletableFuture.runAsync(() -> {
+                try {
+                    byte[] excel = posOrderExportService.exportForStore(
+                            finalStoreId, finalStoreName, range[0], range[1]);
 
-            String filename = "orders_" + storeId
-                    + "_" + LocalDate.now(VN_ZONE) + ".xlsx";
+                    String filename = "orders_" + finalStoreId
+                            + "_" + LocalDate.now(VN_ZONE) + ".xlsx";
 
-            return ResponseEntity.ok()
-                    .header("Content-Disposition",
-                            "attachment; filename=\"" + filename + "\"")
-                    .header("Content-Type",
-                            "application/vnd.openxmlformats-officedocument"
-                                    + ".spreadsheetml.sheet")
-                    .body(excel);
+                    String fromStr = Instant.ofEpochMilli(range[0])
+                            .atZone(VN_ZONE).toLocalDate()
+                            .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy"));
+                    String toStr = Instant.ofEpochMilli(range[1])
+                            .atZone(VN_ZONE).toLocalDate()
+                            .format(java.time.format.DateTimeFormatter.ofPattern("dd/MM/yyyy"));
+
+                    String caption = "📊 Báo cáo đơn hàng POS - " + finalStoreName
+                            + "\n📅 Từ: " + fromStr + " → " + toStr;
+
+                    telegramService.sendDocumentByGroupName(
+                            "pos", excel, filename, caption, null);
+
+                } catch (Exception e) {
+                    log.error("[ADMIN] exportPosOrders async error", e);
+                }
+            });
+
+            return ResponseEntity.ok(ApiResponse.success(
+                    "Đang tạo báo cáo...",
+                    "Báo cáo sẽ được gửi vào Telegram"));
 
         } catch (Exception e) {
             log.error("[ADMIN] exportPosOrders error", e);
-            return ResponseEntity.internalServerError().build();
+            return ResponseEntity.ok(ApiResponse.error(500, e.getMessage()));
         }
     }
 
@@ -377,6 +433,160 @@ public class AdminController {
         }
     }
 
+    private final PosOrderRepository posOrderRepository;
+
+    // GET /api/admin/pos-orders/history
+    @GetMapping("/pos-orders/history")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getPosOrderHistory(
+            @RequestParam(defaultValue = "")   String q,
+            @RequestParam(required = false)    Long   fromTs,
+            @RequestParam(required = false)    Long   toTs,
+            @RequestParam(defaultValue = "0")  int    page,
+            @RequestParam(defaultValue = "20") int    size,
+            Authentication auth
+    ) {
+        try {
+            Long storeId = extractStoreId(extractUserId(auth));
+
+            LocalDate today = LocalDate.now(VN_ZONE);
+            long resolvedFrom = fromTs != null ? fromTs :
+                    today.atStartOfDay(VN_ZONE).toInstant().toEpochMilli();
+            long resolvedTo   = toTs   != null ? toTs   :
+                    today.plusDays(1).atStartOfDay(VN_ZONE).toInstant().toEpochMilli() - 1;
+
+            String query   = (q == null || q.isBlank()) ? null : q.trim();
+            Pageable paged = PageRequest.of(page, size);
+
+            Page<PosOrder> pageResult = posOrderRepository.searchByStore(
+                    storeId, resolvedFrom, resolvedTo, query, paged);
+
+            List<Map<String, Object>> content = pageResult.getContent()
+                    .stream().map(this::toPosOrderMap).toList();
+
+            Map<String, Object> result = new LinkedHashMap<>();
+            result.put("content",     content);
+            result.put("totalItems",  pageResult.getTotalElements());
+            result.put("totalPages",  pageResult.getTotalPages());
+            result.put("currentPage", page);
+            result.put("hasNext",     pageResult.hasNext());
+
+            return ResponseEntity.ok(ApiResponse.success(result, "OK"));
+        } catch (Exception e) {
+            log.error("[ADMIN] getPosOrderHistory error", e);
+            return ResponseEntity.ok(ApiResponse.error(500, e.getMessage()));
+        }
+    }
+
+    private Map<String, Object> toPosOrderMap(PosOrder o) {
+        Map<String, Object> m = new LinkedHashMap<>();
+        m.put("id",            o.getId());
+        m.put("orderCode",     o.getOrderCode());
+        m.put("orderSource",   o.getOrderSource().name());
+        m.put("customerName",  o.getCustomerName());
+        m.put("customerPhone", o.getCustomerPhone());
+        BigDecimal recalcTotal = o.getItems().stream()
+                .map(i -> {
+                    boolean isByWeight = i.getSelectedIngredients().stream()
+                            .anyMatch(ing -> ing.getUnitWeights() != null
+                                    && !ing.getUnitWeights().isEmpty());
+                    if (isByWeight && i.getDiscountPercent() != null && i.getDiscountPercent() > 0) {
+                        // Định lượng + giảm giá: tổng = defaultPrice × quantityUsed × quantity
+                        BigDecimal quantityUsed = i.getSelectedIngredients().stream()
+                                .filter(ing -> ing.getUnitWeights() != null && !ing.getUnitWeights().isEmpty())
+                                .map(ing -> ing.getQuantityUsed())
+                                .findFirst()
+                                .orElse(BigDecimal.ONE);
+                        return i.getDefaultPrice()
+                                .multiply(quantityUsed)
+                                .multiply(BigDecimal.valueOf(i.getQuantity()));
+                    } else if (isByWeight) {
+                        return i.getFinalUnitPrice().multiply(BigDecimal.valueOf(i.getQuantity()));
+                    } else if (i.getDiscountPercent() != null && i.getDiscountPercent() > 0) {
+                        // Giảm giá thường: tạm tính = defaultPrice × qty (giá trước giảm)
+                        return i.getDefaultPrice()
+                                .multiply(BigDecimal.valueOf(i.getQuantity()));
+                    } else {
+                        // App order: basePrice là giá gốc app (trước phí sàn, trước giảm giá)
+                        // subtotal đã bị nhân (1-rate) nên không dùng được
+                        // → dùng basePrice × qty
+                        return i.getBasePrice()
+                                .multiply(BigDecimal.valueOf(i.getQuantity()));
+                    }
+                })
+                .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+        m.put("totalAmount", recalcTotal);
+        m.put("discountAmount",o.getDiscountAmount());
+        m.put("vatAmount",          o.getTotalVatAmount());
+        m.put("platformFeeAmount",  o.getPlatformFeeAmount());
+        m.put("platformFeePercent", o.getPlatformRate() != null
+                ? o.getPlatformRate().multiply(BigDecimal.valueOf(100)) : BigDecimal.ZERO);
+        m.put("discountNote",       o.getDiscountNote());
+        m.put("finalAmount",   o.getFinalAmount());
+        m.put("paymentMethod", o.getPaymentMethod());
+        m.put("status",        o.getStatus().name());
+        m.put("createdAt",     o.getCreatedAt());
+        m.put("itemCount",     o.getItems().size());
+        m.put("staffName", o.getShift() != null
+                ? o.getShift().getStaffName() : "");
+
+        // ── Items đầy đủ ────────────────────────────────────────────
+        m.put("items", o.getItems().stream().map(i -> {
+            Map<String, Object> im = new LinkedHashMap<>();
+            boolean isByWeight = i.getSelectedIngredients().stream()
+                    .anyMatch(ing -> ing.getUnitWeights() != null
+                            && !ing.getUnitWeights().isEmpty());
+
+            // Nếu bán theo định lượng, basePrice thực tế = finalUnitPrice
+            // (đã được tính: giá/kg × trọng lượng thực)
+            // Nếu bán bình thường, dùng basePrice gốc
+            BigDecimal displayBasePrice;
+            if (isByWeight && i.getDiscountPercent() != null && i.getDiscountPercent() > 0) {
+                // Định lượng + giảm giá: basePrice = defaultPrice × quantityUsed
+                BigDecimal quantityUsed = i.getSelectedIngredients().stream()
+                        .filter(ing -> ing.getUnitWeights() != null && !ing.getUnitWeights().isEmpty())
+                        .map(ing -> ing.getQuantityUsed())
+                        .findFirst()
+                        .orElse(BigDecimal.ONE);
+                displayBasePrice = i.getDefaultPrice().multiply(quantityUsed);
+            } else if (isByWeight) {
+                displayBasePrice = i.getFinalUnitPrice();
+            } else if (i.getDiscountPercent() != null && i.getDiscountPercent() > 0) {
+                displayBasePrice = i.getDefaultPrice();
+            } else {
+                displayBasePrice = i.getBasePrice();
+            }
+            im.put("productName",    i.getProductName());
+            im.put("quantity",       i.getQuantity());
+            im.put("basePrice",      displayBasePrice);
+            im.put("isByWeight",     isByWeight);
+            im.put("defaultPrice",   i.getDefaultPrice());
+
+            im.put("finalUnitPrice", i.getFinalUnitPrice());  // giá sau chiết khấu/phí sàn
+            im.put("discountPercent",i.getDiscountPercent());
+            im.put("subtotal",       i.getSubtotal());        // = basePrice * qty (chưa trừ phí sàn)
+            im.put("vatPercent",     i.getVatPercent());
+            im.put("vatAmount",      i.getVatAmount());
+            im.put("addonAmount",    i.getAddonAmount());
+            im.put("note",           i.getNote());
+            im.put("categoryName",   i.getCategoryName());
+
+            // Nguyên liệu đã chọn
+            im.put("ingredients", i.getSelectedIngredients().stream().map(ing -> {
+                Map<String, Object> ingm = new LinkedHashMap<>();
+                ingm.put("variantGroupName", ing.getVariantGroupName());
+                ingm.put("ingredientName",   ing.getIngredientName());
+                ingm.put("quantity", ing.getQuantityUsed());
+                ingm.put("unit",     ing.getIngredientUnit());
+                return ingm;
+            }).toList());
+
+            return im;
+        }).toList());
+
+        return m;
+    }
+
     @GetMapping("/pos-customers")
     public ResponseEntity<ApiResponse<Map<String, Object>>> getPosCustomers(
             @RequestParam(required = false) String search,
@@ -606,25 +816,16 @@ public class AdminController {
             PosDashboardDto.DateRangeFilter filter      = buildPosFilter(period, fromTs, toTs);
             String granularity = gran != null ? gran : defaultGranularity(period, fromTs, toTs);
 
-
-            var storeOptional = posUserStoreRepository.findByUserId(userId);
-
-            if (storeOptional.isEmpty()) {
-                return ResponseEntity.internalServerError()
-                        .body(ApiResponse.error(922, "Tài khoản này chưa được gán xe"));
-            }
-
-            var store = storeOptional.get().getStore();
+            Long storeId = extractStoreId(userId);
 
             PosDashboardDto.PosDashboard data =
-                    dashboardService.getPosDashboard(filter, granularity, store.getId());
+                    dashboardService.getPosDashboard(filter, granularity, storeId);
 
             return ResponseEntity.ok(ApiResponse.success(data, "POS Dashboard loaded"));
 
         } catch (Exception e) {
-            log.error("POS Dashboard error", e);
-            return ResponseEntity.internalServerError()
-                    .body(ApiResponse.error(922, "Lỗi tải POS dashboard: " + e.getMessage()));
+            log.error("[ADMIN DASH] POS Dashboard error: {}", e.getMessage(), e);
+            return ResponseEntity.ok(ApiResponse.error(922, "Lỗi tải POS dashboard: " + e.getMessage()));
         }
     }
 
@@ -638,6 +839,11 @@ public class AdminController {
             }
             case "7DAYS" -> {
                 long from = today.minusDays(6).atStartOfDay(VN_ZONE).toInstant().toEpochMilli();
+                long to   = today.plusDays(1).atStartOfDay(VN_ZONE).toInstant().toEpochMilli() - 1;
+                yield new PosDashboardDto.DateRangeFilter(from, to);
+            }
+            case "28DAYS" -> {
+                long from = today.minusDays(27).atStartOfDay(VN_ZONE).toInstant().toEpochMilli();
                 long to   = today.plusDays(1).atStartOfDay(VN_ZONE).toInstant().toEpochMilli() - 1;
                 yield new PosDashboardDto.DateRangeFilter(from, to);
             }
@@ -673,13 +879,12 @@ public class AdminController {
 
     private String defaultGranularity(String period, Long customFrom, Long customTo) {
         return switch (period.toUpperCase()) {
-            case "TODAY"   -> "DAY";
-            case "7DAYS"   -> "DAY";
+            case "TODAY", "7DAYS"   -> "DAY";
             case "30DAYS",
+                 "28DAYS",    // ← thêm dòng này
                  "MONTH"   -> "DAY";
             case "3MONTHS",
-                 "6MONTHS" -> "MONTH";  // ← THÊM MỚI
-            case "YEAR"    -> "MONTH";
+                 "6MONTHS", "YEAR" -> "MONTH";  // ← THÊM MỚI
             case "CUSTOM"  -> {
                 // Fix 4: Custom < 31 ngày → DAY, ngược lại → MONTH
                 if (customFrom != null && customTo != null) {
@@ -706,6 +911,9 @@ public class AdminController {
                     today.minusDays(6).atTime(0, 0, 1).atZone(VN_ZONE).toInstant().toEpochMilli(),
                     today.atTime(23, 59, 59).atZone(VN_ZONE).toInstant().toEpochMilli()
             };
+            case "28DAYS" -> new long[]{
+                    today.minusDays(27).atTime(0,0,1).atZone(VN_ZONE).toInstant().toEpochMilli(),
+                    today.atTime(23,59,59).atZone(VN_ZONE).toInstant().toEpochMilli()};
             case "30DAYS" -> new long[]{
                     today.minusDays(29).atTime(0, 0, 1).atZone(VN_ZONE).toInstant().toEpochMilli(),
                     today.atTime(23, 59, 59).atZone(VN_ZONE).toInstant().toEpochMilli()
@@ -929,11 +1137,12 @@ public class AdminController {
             @RequestParam(required = false) List<String> categories,
             Authentication auth) {
         try {
-            Long storeId = posChartService.resolveStoreId(extractUserId(auth), null);
+            Long userId  = extractUserId(auth);
+            Long storeId = extractStoreId(userId);
             var data = posChartService.getPeriodByShift(storeId, periodUnit, fromTs, toTs, categories);
             return ResponseEntity.ok(ApiResponse.success(data, "OK"));
         } catch (Exception e) {
-            log.error("[CHART] getPeriodShift error", e);
+            log.error("[CHART] getPeriodShift error: {}", e.getMessage(), e);
             return ResponseEntity.ok(ApiResponse.error(500, e.getMessage()));
         }
     }
@@ -946,13 +1155,14 @@ public class AdminController {
             @RequestParam(required = false) List<String> categories,
             Authentication auth) {
         try {
-            Long storeId = posChartService.resolveStoreId(extractUserId(auth), null);
+            Long userId  = extractUserId(auth);
+            Long storeId = extractStoreId(userId);
             List<PosChartDto.PeriodStackedPoint> data =
                     posChartService.getPeriodStackedByShift(
                             storeId, periodUnit, fromTs, toTs, categories);
             return ResponseEntity.ok(ApiResponse.success(data, "OK"));
         } catch (Exception e) {
-            log.error("[CHART] getPeriodStacked error", e);
+            log.error("[CHART] getPeriodStacked error: {}", e.getMessage(), e);
             return ResponseEntity.ok(ApiResponse.error(500, e.getMessage()));
         }
     }
@@ -977,11 +1187,12 @@ public class AdminController {
                 toTs = today.withDayOfMonth(today.getMonth().length(today.isLeapYear()))
                         .plusDays(1).atStartOfDay(VN).toInstant().toEpochMilli() - 1;
             }
-            Long storeId = posChartService.resolveStoreId(extractUserId(auth), null);
+            Long userId  = extractUserId(auth);
+            Long storeId = extractStoreId(userId);
             var result = posChartService.getHeatmap(storeId, periodMinutes, fromTs, toTs, productIds);
             return ResponseEntity.ok(ApiResponse.success(result, "OK"));
         } catch (Exception e) {
-            log.error("[CHART] getHeatmap error", e);
+            log.error("[CHART] getHeatmap error: {}", e.getMessage(), e);
             return ResponseEntity.ok(ApiResponse.error(500, e.getMessage()));
         }
     }
@@ -990,7 +1201,7 @@ public class AdminController {
     public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getHeatmapProducts(
             Authentication auth) {
         try {
-            Long storeId = posChartService.resolveStoreId(extractUserId(auth), null);
+            Long storeId = extractStoreId(extractUserId(auth));
             List<Map<String, Object>> products = posChartService.getProductsForHeatmap(storeId);
             return ResponseEntity.ok(ApiResponse.success(products, "OK"));
         } catch (Exception e) {

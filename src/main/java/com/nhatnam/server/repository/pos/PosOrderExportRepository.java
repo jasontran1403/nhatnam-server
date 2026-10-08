@@ -28,7 +28,8 @@ public class PosOrderExportRepository {
         i.categoryName, i.productName,
         i.basePrice, i.finalUnitPrice, i.discountPercent, i.quantity, i.vatAmount,
         i.id,
-        ing.ingredientName, ing.quantityUsed, ing.selectedCount, ing.unitWeights
+        ing.ingredientName, ing.quantityUsed, ing.selectedCount, ing.unitWeights,
+        ing.addonPriceSnapshot, ing.addonPriceNet
     FROM PosOrder o
     JOIN o.shift sh
     JOIN o.store st
@@ -95,7 +96,9 @@ public class PosOrderExportRepository {
                 str(r[i++]),                  // ingredientName
                 toBD(r[i++]),                 // ingredientQty
                 toInt(r[i++]),                // ingredientSelectedCount
-                toUnitWeightsStr(r[i])        // ingredientUnitWeights ← dùng helper mới
+                toUnitWeightsStr(r[i++]),     // ingredientUnitWeights ← dùng helper mới
+                toBD(r[i++]),                 // ingredientAddonPrice (gross)
+                toBD(r[i])                    // ingredientAddonPriceNet
         );
     }
 

@@ -34,9 +34,9 @@ public class PosShiftOpenInventory {
     @Column(name = "pack_quantity", nullable = false)
     private Integer packQuantity = 0;
 
-    @Column(name = "unit_per_pack")
+    @Column(name = "unit_per_pack", precision = 12, scale = 3)
     @Builder.Default
-    private Integer unitPerPack = 1;
+    private BigDecimal unitPerPack = BigDecimal.ONE;
 
     @Column(name = "unit_quantity", nullable = false, precision = 10, scale = 2)
     @Builder.Default

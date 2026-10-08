@@ -1,5 +1,7 @@
 package com.nhatnam.server.dto.pos;
 
+import java.math.BigDecimal;
+
 import lombok.Builder;
 import lombok.Data;
 
@@ -34,7 +36,7 @@ public class StockImportHistoryResponse {
         private String ingredientImageUrl;
         private String ingredientType; // "MAIN" | "SUB"
         private Integer packQty;
-        private Integer unitPerPack;
+        private BigDecimal unitPerPack;
         private Long importedAt;
     }
 }

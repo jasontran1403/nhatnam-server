@@ -221,6 +221,48 @@ public class PosDashboardDto {
     }
 
     // ══════════════════════════════════════════════════════════
+    // ROLLING PERFORMANCE (cửa sổ trượt 7 / 28 / 30 ngày)
+    // Endpoint: GET /api/superadmin/dashboard/pos/rolling?window=7|28|30
+    // Rolling tại ngày D = tổng dữ liệu [D-(window-1) .. D]
+    // ══════════════════════════════════════════════════════════
+
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class RollingMetrics {
+        private BigDecimal revenue;    // SUM(finalAmount) đơn COMPLETED trong window
+        private long       orders;     // số đơn COMPLETED
+        private long       products;   // tổng số DÒNG sản phẩm (COUNT order_item, không nhân số lượng)
+        private BigDecimal aov;        // TRUNG BÌNH AOV theo ngày = (Σ aov mỗi ngày)/N
+    }
+
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class RollingDeltaPct {
+        // % thay đổi so với kỳ liền trước cùng độ dài; null nếu kỳ trước = 0 (không xác định)
+        private Double revenue;
+        private Double orders;
+        private Double products;
+        private Double aov;
+    }
+
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class RollingPoint {
+        private String     date;       // yyyy-MM-dd — ngày KẾT THÚC window
+        private long       ts;         // epoch ms đầu ngày (VN)
+        private BigDecimal revenue;     // giá trị rolling tại ngày này
+        private long       orders;
+        private long       products;
+        private BigDecimal aov;
+    }
+
+    @Data @Builder @NoArgsConstructor @AllArgsConstructor
+    public static class RollingPerformance {
+        private int                window;    // 7 | 28 | 30
+        private RollingMetrics      current;   // window kết thúc hôm nay (anchor)
+        private RollingMetrics      previous;  // window liền trước, cùng độ dài
+        private RollingDeltaPct     deltaPct;
+        private List<RollingPoint>  series;    // chuỗi rolling theo ngày (để vẽ line chart)
+    }
+
+    // ══════════════════════════════════════════════════════════
     // DATE RANGE FILTER
     // ══════════════════════════════════════════════════════════
 

@@ -17,7 +17,11 @@ public class PosOrderItemIngredientResponse {
     private Long   ingredientId;
     private String ingredientName;
     private String ingredientImageUrl;
+    /** Giá addon gốc lúc bán (giá niêm yết / khách trả). */
     private BigDecimal addonPrice;
+
+    /** Giá addon thực nhận sau giảm giá app + phí sàn. Offline = addonPrice. */
+    private BigDecimal addonPriceNet;
 
     /** Số lần chọn (số unit). */
     private Integer selectedCount;

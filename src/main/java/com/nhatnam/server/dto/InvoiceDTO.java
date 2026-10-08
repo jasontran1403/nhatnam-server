@@ -36,6 +36,16 @@ public class InvoiceDTO {
     private String companyPhone;
     private String companyAddress;
 
+    /** Loại đơn gốc (WHOLESALE / RETAIL) và nhãn hiển thị (Sỉ / Lẻ) */
+    private String type;
+    private String typeLabel;
+
+    /** Link công khai để khách nhập thông tin xuất hóa đơn (in kèm QR) */
+    private String invoicePublicUrl;
+
+    /** URL ảnh QR trỏ tới invoicePublicUrl — null thì PDF ẩn khối QR này */
+    private String invoiceQrUrl;
+
     Map<Integer, BigDecimal> vatBreakdown = new LinkedHashMap<>();
 
     // Danh sách sản phẩm trong đơn (giống OrderItemResponse)

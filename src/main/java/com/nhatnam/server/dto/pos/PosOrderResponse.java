@@ -16,6 +16,7 @@ public class PosOrderResponse {
     private String customerPhone;
     private String customerName;
     private OrderSource orderSource;
+    private String invoiceToken;
     private PosOrderStatus status;
     private String paymentMethod;
     private String appOrderCode;
@@ -33,6 +34,16 @@ public class PosOrderResponse {
 
     private Long createdAt;
     private Long updatedAt;
+
+    // ── Invoice info ─────────────────────────────────────────────
+    private String invoiceTaxCode;
+    private String invoiceCompanyName;
+    private String invoiceEmail;
+    private Long   invoiceSubmittedAt;
+    private String eInvoiceNo;
+    private Long   eInvoiceIssuedDate;
+    private String eInvoicePdfUrl;
+    private String eInvoiceStatus;
 
     // ← Kept for backward compat nhưng tính từ snapshot
     private BigDecimal platformFee;   // = platformFeeAmount
